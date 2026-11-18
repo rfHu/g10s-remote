@@ -242,9 +242,33 @@ def alt_tab_commit(reason=""):
     return True
 
 
+def alt_tab_cancel(reason=""):
+    """取消 Alt+Tab：关掉浮窗但不切换窗口。
+
+    Alt 还按着的时候，Esc 会被浮窗消费（不会传给当前应用），浮窗随之消失、
+    当前窗口保持不变；之后再松开 Alt 就不会激活任何窗口。
+
+    这里注入的 Esc 必须带 MAGIC_EXTRA：否则它会再次进入钩子的
+    preempt_stages，又一次触发取消，形成递归。
+    """
+    global ALT_TAB_ARMED
+    if not ALT_TAB_ARMED:
+        return False
+    try:
+        _send(VK_ESCAPE, extra=MAGIC_EXTRA)
+        time.sleep(0.02)
+    except Exception as e:
+        log("取消 Alt+Tab 时发送 Esc 失败: %r" % (e,))
+    _send(VK_LMENU, up=True)
+    ALT_TAB_ARMED = False
+    log("Alt+Tab 已取消%s" % ("（%s）" % reason if reason else ""))
+    return True
+
+
 def alt_tab_watchdog():
     if ALT_TAB_ARMED and time.time() - ALT_TAB_SINCE > OK_ARM_TIMEOUT:
-        alt_tab_commit("超时，自动确认")
+        # 超时也按「取消」处理：用户多半是走神了，不该替他把窗口换走
+        alt_tab_cancel("超时，自动取消")
 
 
 _last_wheel = 0.0
@@ -357,7 +381,8 @@ def preempt_stages(vk):
             VOICE._force_release("打断失败兜底")
         consumed = True
     if ALT_TAB_ARMED and vk not in ALT_TAB_KEEP:
-        alt_tab_commit("被其他按键打断")
+        # 只关掉浮窗、不切换窗口（原来这里会确认切换，误按其他键就把窗口换走了）
+        alt_tab_cancel("被其他按键打断")
         consumed = True
     return consumed
 
@@ -1428,7 +1453,9 @@ def show_tray_menu(hwnd):
             watch_flags = MF_STRING | (MF_CHECKED if KEY_MODE == "watch" else 0)
             u32.AppendMenuW(sub, edit_flags, MENU_MODE_EDIT, "编辑模式")
             u32.AppendMenuW(sub, watch_flags, MENU_MODE_WATCH, "观看模式")
-            u32.AppendMenuW(menu, MF_POPUP, sub.value, "模式")
+            # CreatePopupMenu 的 restype 是 c_void_p，ctypes 返回的是普通整数
+            # （不是 c_void_p 实例），所以这里直接传，不能写 sub.value
+            u32.AppendMenuW(menu, MF_POPUP, sub, "模式")
         else:
             log("创建模式子菜单失败，本次菜单不含模式项")
 
@@ -1564,10 +1591,9 @@ def main():
     edit[VK_PRIOR] = ("copy", 0, "PgUp → 复制")
     edit[VK_NEXT] = ("paste", 0, "PgDn → 粘贴")
 
-    # 观看模式：浏览 / 看视频。播放键与返回键不写进表 → 自动保持原生
+    # 观看模式：浏览 / 看视频。播放键、返回键、DEL 都不写进表 → 保持原生
     watch[VK_APPS] = ("chord", ((VK_CONTROL, VK_SHIFT), VK_T),
                       "灯泡键 → 恢复关闭的标签页")
-    watch[VK_DELETE] = ("right_click", 0, "DEL → 右键菜单")
 
     if CFG.silent_key == "mode" and not CFG.keep_mute_native:
         # 动作改由消费者页 0x00E2 触发（见 on_raw_input），钩子这边只负责吃掉原生 0xAD
