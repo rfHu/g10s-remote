@@ -673,24 +673,22 @@ def handle_mute_key():
                 log("  兜底：音量停在 %s，复位失败" % m)
         return
     before = EXPECTED_MUTE          # 按键前应有的状态
-    actual = get_mute()             # 现在（可能已被驱动层改过）
-    txt = toggle_mode()
-    if not CONSUMER_OWNED and before is not None and actual is not None:
-        if actual != before:
-            # 驱动层改了 —— 说明这一次钩子没拦住（主线程刚好在忙）。
-            # 用 API 直接设回原件，不经过按键事件。
-            ok = set_mute(before)
-            if not ok:
-                # 音频服务偶尔会对紧接着的调用返回失败，等一下再试一次
-                time.sleep(0.02)
-                ok = set_mute(before)
-            if ok:
-                log("静音键：驱动层改动了静音（%s→%s），已用 API 静默复位"
-                    % (actual, before))
-            else:
-                log("静音键：驱动层改动了静音，API 复位失败（音量已变）")
+    actual = get_mute()             # 现在（驱动层通常已经改过了）
+    if before is not None and actual is not None and actual == before:
+        # 驱动层可能还差几毫秒才落地，等一拍再复读，避免漏判
+        time.sleep(0.03)
+        actual = get_mute()
+    # 先把音量救回来，再刷托盘 —— 托盘刷新要几十毫秒，放在前面会拉长静音窗口
+    if not CONSUMER_OWNED and before is not None and actual is not None and actual != before:
+        ok = set_mute(before)
+        if not ok:
+            time.sleep(0.02)
+            ok = set_mute(before)      # 音频服务偶尔拒绝紧接着的第二次调用
+        if ok:
+            log("静音键：音量被驱动层改成 %s，已复位为 %s" % (actual, before))
         else:
-            log("静音键：驱动层未改动静音（钩子已拦住）")
+            log("静音键：音量被驱动层改成 %s，复位失败" % actual)
+    txt = toggle_mode()
     log("静音键 → 切换上/下键模式：现在%s" % txt)
 
 
@@ -1339,9 +1337,10 @@ def main():
     ap.add_argument("--own", action="store_true",
                     help="尝试独占消费者页（RIDEV_NOLEGACY）。实测这台复合设备会被系统拒绝"
                          "（err=1004），保留开关便于换设备时验证")
-    ap.add_argument("--intercept-mute", dest="keep_mute_native", action="store_false",
-                    help="拦截 VK 0xAD，只留驱动层一次 toggle 再由 API 复位。"
-                         "默认不拦：让驱动层与 shell 各 toggle 一次互相抵消")
+    ap.add_argument("--keep-mute-native", dest="keep_mute_native", action="store_true",
+                    default=False,
+                    help="不拦截 VK 0xAD（实测系统只会 toggle 一次，仍需兜底）。"
+                         "默认拦截：只剩驱动层一次 toggle，随即用 API 复位")
     CFG = ap.parse_args()
 
     _logf = open(LOG_PATH, "a", encoding="utf-8")
