@@ -471,7 +471,9 @@ ole32.CLSIDFromString.argtypes = (wintypes.LPCWSTR, ctypes.c_void_p)
 ole32.CoCreateInstance.argtypes = (ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD,
                                    ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
 ole32.CoInitializeEx.argtypes = (ctypes.c_void_p, wintypes.DWORD)
+ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
 COINIT_MULTITHREADED = 0x0
+CLSCTX_ALL = 23
 
 
 class _CA_GUID(ctypes.Structure):
@@ -496,6 +498,47 @@ _TLS = threading.local()      # 每个线程一个音频端点，见 audio_endpo
 EXPECTED_MUTE = None          # 我们认为系统当前应有的静音状态
 
 
+def default_device_id():
+    """当前默认输出设备的 ID。
+
+    用来判断缓存的音频端点是否过期：插拔蓝牙/耳机后默认设备会换成另一个，
+    而 audio_endpoint 缓存的是第一次拿到的那个设备的 COM 指针 —— 拿旧指针
+    读音量，永远得到旧设备的状态，表现为「检测不到静音变化、于是不复位」。
+    """
+    p_enum = ctypes.c_void_p()
+    try:
+        clsid = _ca_guid("{BCDE0395-E52F-467C-8E3D-C4579291692E}")
+        iid_enum = _ca_guid("{A95664D2-9614-4F35-A746-DE8DB63617E6}")
+        hr = ole32.CoCreateInstance(ctypes.byref(clsid), None, CLSCTX_ALL,
+                                    ctypes.byref(iid_enum), ctypes.byref(p_enum))
+        if hr != 0:
+            return None
+        p_dev = ctypes.c_void_p()
+        hr = _vt_call(p_enum, 4, ctypes.c_long,
+                      (ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)),
+                      0, 0, ctypes.byref(p_dev))
+        if hr != 0:
+            return None
+        try:
+            buf = ctypes.c_wchar_p()
+            # IMMDevice::GetId(LPWSTR*) —— vtable 第 5 项
+            hr = _vt_call(p_dev, 5, ctypes.c_long,
+                          (ctypes.POINTER(ctypes.c_wchar_p),), ctypes.byref(buf))
+            if hr != 0:
+                return None
+            text = buf.value
+            if buf:
+                ole32.CoTaskMemFree(ctypes.cast(buf, ctypes.c_void_p))
+            return text
+        finally:
+            _vt_call(p_dev, 2, ctypes.c_ulong, ())      # Release
+    except Exception:
+        return None
+    finally:
+        if p_enum.value:
+            _vt_call(p_enum, 2, ctypes.c_ulong, ())
+
+
 def audio_endpoint():
     """按线程各建一个音频端点。
 
@@ -516,7 +559,6 @@ def audio_endpoint():
         clsid = _ca_guid("{BCDE0395-E52F-467C-8E3D-C4579291692E}")   # MMDeviceEnumerator
         iid_enum = _ca_guid("{A95664D2-9614-4F35-A746-DE8DB63617E6}")
         iid_vol = _ca_guid("{5CDF2C82-841E-4546-9722-0CF74078229A}")
-        CLSCTX_ALL = 23
         p_enum = ctypes.c_void_p()
         hr = ole32.CoCreateInstance(ctypes.byref(clsid), None, CLSCTX_ALL,
                                     ctypes.byref(iid_enum), ctypes.byref(p_enum))
@@ -538,6 +580,7 @@ def audio_endpoint():
         for obj in (p_dev, p_enum):
             _vt_call(obj, 2, ctypes.c_ulong, ())       # Release
         _TLS.vol = p_vol
+        _TLS.dev_id = default_device_id()
         log("音频端点已就绪（%s 线程）" % threading.current_thread().name)
     except Exception as e:
         _TLS.failed = True
@@ -565,6 +608,32 @@ def set_mute(flag):
     if hr != 0:
         log("[audio] SetMute(%s) 失败 hr=0x%08X" % (flag, hr & 0xFFFFFFFF))
     return hr == 0
+
+
+def refresh_endpoint_if_changed(reset_baseline=True):
+    """默认输出设备变了就重建端点。
+
+    不检测会踩一个很隐蔽的坑：`audio_endpoint` 缓存的是「第一次拿到的那个设备」
+    的 COM 指针。插拔蓝牙/耳机后默认设备换成另一个，旧指针读到的是旧设备的状态
+    （通常一直是非静音），于是判断「音量没变」→ 不复位 → 新设备真的静音了，
+    而且之后再按也不会恢复。
+
+    reset_baseline=False 用于按键处理途中：此时设备可能刚换、状态已被按键改过，
+    不能用当时读到的值当基线（应该由调用方按「toggle 取反」推导）。
+    """
+    global EXPECTED_MUTE
+    cur = default_device_id()
+    if cur is None or cur == getattr(_TLS, "dev_id", None):
+        return False
+    _TLS.vol = None
+    _TLS.failed = False
+    _TLS.dev_id = None
+    m = get_mute()                       # 会触发按新设备重建
+    if m is not None and reset_baseline:
+        EXPECTED_MUTE = m
+    log("默认输出设备已变化，重建音频端点%s"
+        % ("，静音基线重置为 %s" % m if (reset_baseline and m is not None) else ""))
+    return True
 
 
 def refresh_expected_mute():
@@ -672,9 +741,16 @@ def handle_mute_key():
             else:
                 log("  兜底：音量停在 %s，复位失败" % m)
         return
+    # 先确认端点还指向当前默认设备：插拔蓝牙/耳机后缓存会失效，
+    # 旧指针读到的是旧设备状态，会导致「检测不到静音、于是不复位」
+    device_changed = refresh_endpoint_if_changed(reset_baseline=False)
     before = EXPECTED_MUTE          # 按键前应有的状态
     actual = get_mute()             # 现在（驱动层通常已经改过了）
-    if before is not None and actual is not None and actual == before:
+    if device_changed and actual is not None:
+        # 设备刚换过，基线不可信。但静音键是 toggle：
+        # 按键后的状态取反，就是按键前的状态。
+        before = not actual
+    elif before is not None and actual is not None and actual == before:
         # 驱动层可能还差几毫秒才落地，等一拍再复读，避免漏判
         time.sleep(0.03)
         actual = get_mute()
@@ -694,7 +770,16 @@ def handle_mute_key():
 
 def work_loop():
     while True:
-        item = _WORK_Q.get()
+        try:
+            item = _WORK_Q.get(timeout=1.0)
+        except queue.Empty:
+            # 空闲时检查默认设备有没有换过（插拔蓝牙/耳机）。
+            # 放在后台线程，不占主线程，也就不会拖慢钩子回调。
+            try:
+                refresh_endpoint_if_changed()
+            except Exception as e:
+                log("设备检查出错: %r" % (e,))
+            continue
         if item is None:
             return
         try:
