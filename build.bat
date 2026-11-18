@@ -50,6 +50,7 @@ timeout /t 1 >nul
   --add-data "%~dp0app.ico;." ^
   --add-data "%~dp0app-dialog.ico;." ^
   --add-data "%~dp0app-watch.ico;." ^
+  --add-data "%~dp0help.html;." ^
   --distpath "%~dp0dist" --workpath "%~dp0build" "%~dp0bridge.py"
 if errorlevel 1 (
   echo [ERROR] PyInstaller failed.

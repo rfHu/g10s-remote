@@ -21,7 +21,9 @@ import ctypes
 import os
 import queue
 import re
+import shutil
 import sys
+import tempfile
 import threading
 import time
 from ctypes import wintypes
@@ -44,9 +46,16 @@ WM_COMMAND_ = 0x0111
 MENU_OPEN_LOG = 1001
 MENU_EXIT = 1002
 MENU_AUTOSTART = 1003
+MENU_HELP = 1007
 MENU_MODE_EDIT = 1005
 MENU_MODE_WATCH = 1006
 MF_STRING, MF_CHECKED, MF_SEPARATOR, MF_POPUP = 0x0000, 0x0008, 0x0800, 0x0010
+
+# 托盘左键单击与双击共用一个事件：先起个定时器等 350ms，
+# 这段时间内没有第二次点击才算单击。双击时间由系统决定（默认 500ms），
+# 350ms 足以区分，又不会让单击感觉拖沓。
+TIMER_SINGLE_CLICK = 1
+_PENDING_CLICK = False
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "G10S-Remote"
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
@@ -1105,6 +1114,10 @@ WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT,
 u32.DefWindowProcW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 u32.DefWindowProcW.restype = ctypes.c_ssize_t
 # 完整声明签名：句柄类参数若走默认的 c_int，x64 下会被判成「int too long to convert」
+u32.SetTimer.argtypes = (wintypes.HWND, ctypes.c_size_t, wintypes.UINT, ctypes.c_void_p)
+u32.SetTimer.restype = ctypes.c_size_t
+u32.KillTimer.argtypes = (wintypes.HWND, ctypes.c_size_t)
+u32.KillTimer.restype = wintypes.BOOL
 u32.CreateWindowExW.argtypes = (wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
                                 wintypes.DWORD, ctypes.c_int, ctypes.c_int,
                                 ctypes.c_int, ctypes.c_int, wintypes.HWND,
@@ -1122,13 +1135,25 @@ u32.SetWindowsHookExW.restype = ctypes.c_void_p
 def wndproc(hwnd, msg, wparam, lparam):
     global _last_wheel_log
     if msg == WM_TRAYICON:
+        global _PENDING_CLICK
         ev = lparam & 0xFFFF
-        if ev == 0x0202:                 # WM_LBUTTONUP：左键单击切换模式
-            # 改用单击而不是双击：双击会先触发一次 LBUTTONUP 再触发 DBLCLK，
-            # 两次切换等于没切。日志入口挪到右键菜单里，功能没有损失。
-            toggle_mode()
+        if ev == 0x0202:                 # WM_LBUTTONUP：单击切模式 / 双击看说明
+            if _PENDING_CLICK:
+                _PENDING_CLICK = False
+                u32.KillTimer(hwnd, TIMER_SINGLE_CLICK)
+                open_help()
+            else:
+                _PENDING_CLICK = True
+                u32.SetTimer(hwnd, TIMER_SINGLE_CLICK, 350, None)
         elif ev == 0x0205:               # WM_RBUTTONUP：右键菜单
             show_tray_menu(hwnd)
+        return 0
+
+    if msg == WM_TIMER and wparam == TIMER_SINGLE_CLICK:
+        u32.KillTimer(hwnd, TIMER_SINGLE_CLICK)
+        if _PENDING_CLICK:
+            _PENDING_CLICK = False
+            toggle_mode()
         return 0
     if msg == WM_COMMAND_:               # 菜单项也可走 WM_COMMAND 投递
         handle_menu(wparam & 0xFFFF)
@@ -1402,6 +1427,29 @@ def open_log():
         log("打开日志失败: %r" % (e,))
 
 
+def open_help():
+    """打开按键说明页。
+
+    help.html 打包在 exe 内部（--onefile 会解压到 _MEIPASS 临时目录），
+    但那个目录在程序退出后会被删掉，浏览器可能还没读完，所以先复制到
+    系统临时目录再用默认浏览器打开。
+    """
+    base = getattr(sys, "_MEIPASS", BASE_DIR)
+    src = os.path.join(base, "help.html")
+    if not os.path.exists(src):
+        log("找不到按键说明 help.html（打包时漏了 --add-data？）")
+        return
+    try:
+        dst_dir = os.path.join(tempfile.gettempdir(), "G10S-Remote")
+        os.makedirs(dst_dir, exist_ok=True)
+        dst = os.path.join(dst_dir, "help.html")
+        shutil.copyfile(src, dst)
+        os.startfile(dst)
+        log("已打开按键说明")
+    except Exception as e:
+        log("打开按键说明失败: %r" % (e,))
+
+
 def autostart_command():
     """写进 Run 键的命令行。打包后就是 exe 自己；源码模式用 pythonw 跑桥接。"""
     if getattr(sys, "frozen", False):
@@ -1448,6 +1496,7 @@ def show_tray_menu(hwnd):
         return
     try:
         u32.AppendMenuW(menu, MF_STRING, MENU_OPEN_LOG, "打开日志")
+        u32.AppendMenuW(menu, MF_STRING, MENU_HELP, "按键说明…")
 
         # 模式做成子菜单里的互斥项：外面只写「模式」，进去再选
         sub = u32.CreatePopupMenu()
@@ -1485,6 +1534,8 @@ def handle_menu(cmd):
     global FLAG_QUIT
     if cmd == MENU_OPEN_LOG:
         open_log()
+    elif cmd == MENU_HELP:
+        open_help()
     elif cmd == MENU_MODE_EDIT:
         set_mode("edit")
     elif cmd == MENU_MODE_WATCH:
