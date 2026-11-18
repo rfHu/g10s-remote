@@ -539,6 +539,38 @@ def default_device_id():
             _vt_call(p_enum, 2, ctypes.c_ulong, ())
 
 
+def default_device_enumerator():
+    """默认输出设备的枚举器名：BTHENUM=蓝牙，HDAUDIO/USB=本地。
+
+    蓝牙的静音走 AVRCP 异步链路，复位必须等一个来回；本地设备是同步的，
+    两类设备不能用同一个等待时间，否则本地设备每次按键都白搭 0.6 秒断音。
+
+    设备 ID 形如 {0.0.0.00000000}.{guid}，枚举器名在注册表的
+    MMDevices\\Audio\\Render\\{guid}\\Properties 下，值名是固定的 PKEY GUID。
+    """
+    dev_id = default_device_id()
+    if not dev_id:
+        return None
+    m = re.search(r"\{([0-9a-fA-F-]{36})\}\s*$", dev_id)
+    if not m:
+        return None
+    key = (r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render"
+           r"\{%s}\Properties" % m.group(1))
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+            val, _ = winreg.QueryValueEx(
+                k, "{a45c254e-df1c-4efd-8020-67d146a850e0},24")
+            return str(val)
+    except OSError:
+        return None
+
+
+def is_bluetooth_output():
+    name = (default_device_enumerator() or "").upper()
+    return name.startswith("BTH")
+
+
 def audio_endpoint():
     """按线程各建一个音频端点。
 
@@ -764,8 +796,10 @@ def handle_mute_key():
         # 蓝牙 AVRCP 是异步链路：驱动层发出的 Mute 要几十到几百毫秒才到音箱。
         # 立刻 Unmute 会和它在设备侧抢先后（实测：端点复位成功、声音仍是静的）。
         # 先等这条 Mute 落地，再发同步，设备侧才会最终停在「未静音」。
-        if actual is not None and actual != before:
-            time.sleep(0.35)
+        if actual is not None and actual != before and is_bluetooth_output():
+            # 只有蓝牙输出需要等 AVRCP 往返；板载/USB 是同步的，
+            # 在这里等只会把本来几毫秒的断音拉成 0.6 秒。
+            time.sleep(0.6)
         ok = set_mute(before)
         if not ok:
             time.sleep(0.03)
