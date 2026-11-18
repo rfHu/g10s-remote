@@ -96,15 +96,19 @@ def four_way_alpha(x, y):
     return False
 
 
+def in_ellipse(x, y, cx, cy, rx, ry):
+    return ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1.0
+
+
 def bubbles_alpha(x, y):
-    """两个叠放的对话气泡，用于「对话模式」图标。
+    """两个叠放的椭圆对话气泡，用于「对话模式」图标。
 
     小气泡外加了一圈「间隙」（gap），把大气泡在同一区域挖掉 —— 否则两个
     气泡都是纯白，叠在一起会糊成一块，没有层次。
     """
-    big = in_round_rect(x, y, 0.13, 0.15, 0.65, 0.57, 0.09)
-    gap = in_round_rect(x, y, 0.40, 0.42, 0.92, 0.86, 0.11)
-    small = in_round_rect(x, y, 0.45, 0.47, 0.87, 0.81, 0.08)
+    big = in_ellipse(x, y, 0.39, 0.36, 0.27, 0.20)
+    gap = in_ellipse(x, y, 0.64, 0.63, 0.29, 0.23)
+    small = in_ellipse(x, y, 0.65, 0.63, 0.24, 0.18)
     if small:
         return True
     if big and not gap:

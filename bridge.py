@@ -69,6 +69,9 @@ VK_APPS = 0x5D                # 遥控器「菜单/灯泡」键（Applications �
 VK_CONTROL = 0x11
 VK_MENU = 0x12                 # 通用 Alt（组合键用；Alt+Tab 那套用 VK_LMENU）
 VK_K = 0x4B
+VK_N = 0x4E
+VK_OEM_4 = 0xDB               # [
+VK_OEM_6 = 0xDD               # ]
 
 # 「第一阶段」正在生效时，这些键不触发收尾：
 # 修饰键本身（含我们自己注入的 Ctrl/Win/Alt）必须排除，否则一注入就自我打断
@@ -1583,17 +1586,22 @@ def main():
     edit = KEY_ACTIONS_BY_MODE["edit"]
     watch = KEY_ACTIONS_BY_MODE["watch"]
 
-    # 对话模式：写作 / 编码。灯泡键最好按，留给最高频的回车
+    # 对话模式：跟 AI 说话、发消息。灯泡键最好按，留给最高频的回车
     edit[VK_APPS] = ("key", VK_RETURN, "灯泡键 → 回车")
-    edit[VK_MEDIA_PLAY_PAUSE] = ("chord", ((VK_CONTROL, VK_MENU), VK_K),
-                                 "播放键 → Ctrl+Alt+K（全局搜索）")
+    edit[VK_MEDIA_PLAY_PAUSE] = ("chord", ((VK_CONTROL,), VK_N),
+                                 "播放键 → Ctrl+N（新建对话）")
     edit[VK_BROWSER_BACK] = ("key", VK_ESCAPE, "返回键 → Esc")
-    edit[VK_PRIOR] = ("copy", 0, "PgUp → 复制")
-    edit[VK_NEXT] = ("paste", 0, "PgDn → 粘贴")
+    edit[VK_PRIOR] = ("chord", ((VK_CONTROL,), VK_OEM_4),
+                      "PgUp → Ctrl+[（上一个对话）")
+    edit[VK_NEXT] = ("chord", ((VK_CONTROL,), VK_OEM_6),
+                     "PgDn → Ctrl+]（下一个对话）")
 
-    # 观看模式：浏览 / 看视频。播放键、返回键、DEL 都不写进表 → 保持原生
-    watch[VK_APPS] = ("chord", ((VK_CONTROL, VK_SHIFT), VK_T),
-                      "灯泡键 → 恢复关闭的标签页")
+    # 观看模式：浏览 / 看视频。播放键、返回键不写进表 → 保持原生
+    watch[VK_APPS] = ("key", VK_RETURN, "灯泡键 → 回车")
+    watch[VK_PRIOR] = ("chord", ((VK_CONTROL,), VK_TAB),
+                       "PgUp → Ctrl+Tab（下一个标签页）")
+    watch[VK_NEXT] = ("chord", ((VK_CONTROL, VK_SHIFT), VK_TAB),
+                      "PgDn → Ctrl+Shift+Tab（上一个标签页）")
 
     if CFG.silent_key == "mode" and not CFG.keep_mute_native:
         # 动作改由消费者页 0x00E2 触发（见 on_raw_input），钩子这边只负责吃掉原生 0xAD
