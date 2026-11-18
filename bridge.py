@@ -44,8 +44,9 @@ WM_COMMAND_ = 0x0111
 MENU_OPEN_LOG = 1001
 MENU_EXIT = 1002
 MENU_AUTOSTART = 1003
-MENU_KEY_MODE = 1004
-MF_STRING, MF_CHECKED, MF_SEPARATOR = 0x0000, 0x0008, 0x0800
+MENU_MODE_EDIT = 1005
+MENU_MODE_WATCH = 1006
+MF_STRING, MF_CHECKED, MF_SEPARATOR, MF_POPUP = 0x0000, 0x0008, 0x0800, 0x0010
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "G10S-Remote"
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
@@ -78,6 +79,15 @@ ALT_TAB_KEEP = STAGE_KEEP_MODS | {0x09, 0x25, 0x26, 0x27, 0x28}
 VK_MUTE = 0xAD                # 遥控器「静音」键（消费者页 0x00E2）
 VK_UP = 0x26
 VK_DOWN = 0x28
+# 键位调整新增
+VK_SHIFT = 0x10
+VK_INSERT = 0x2D
+VK_DELETE = 0x08
+VK_PRIOR = 0x21               # PgUp
+VK_NEXT = 0x22                # PgDn
+VK_C = 0x43
+VK_V = 0x56
+VK_T = 0x54
 MOUSEEVENTF_WHEEL = 0x0800
 WHEEL_DELTA = 120
 WHEEL_MIN_INTERVAL = 0.09     # 滚轮最小间隔，防止按住时滚得飞快
@@ -205,10 +215,6 @@ def tap_chord(mods, vk):
         time.sleep(0.008)
 
 
-# 源 VK -> (修饰键元组, 主键)。由 main() 按参数填充。
-CHORD_ACTIONS = {}
-
-
 def alt_tab_open():
     """打开 Alt+Tab 浮窗并保持：按住 Alt，点一下 Tab。
 
@@ -310,28 +316,38 @@ def refresh_tray_text():
     refresh_tray()
 
 
-def toggle_mode():
+def set_mode(mode):
+    """直接指定模式（托盘子菜单用）。已经是该模式时什么都不做。"""
     global KEY_MODE
-    KEY_MODE = "watch" if KEY_MODE == "edit" else "edit"
-    txt = mode_text()
-    log("已切换到：%s" % txt)
+    if KEY_MODE == mode:
+        return False
+    KEY_MODE = mode
+    log("已切换到：%s" % mode_text())
     refresh_tray()
-    # 原来这里还会弹托盘气泡，但 Windows 11 已废弃传统气泡（实测从不显示），
-    # 调用只是让 Shell_NotifyIcon 白跑一趟。模式指示统一交给图标变色 + 悬停文字。
-    return txt
+    return True
+
+
+def toggle_mode():
+    set_mode("watch" if KEY_MODE == "edit" else "edit")
+    return mode_text()
 
 
 def preempt_stages(vk):
     """按下别的键时，先把处于「第一阶段」的切换型功能收尾。
 
-    - 语音输入进行中  → 先结束语音（松开 Ctrl+Win），再让这个键照常生效
-    - Alt+Tab 浮窗打开 → 先确认切换（松开 Alt），再让这个键照常生效
-    修饰键不触发，否则我们自己注入的 Ctrl/Win/Alt 会立刻把刚打开的状态关掉。
+    - 语音输入进行中  → 结束语音（松开 Ctrl+Win）
+    - Alt+Tab 浮窗打开 → 确认切换（松开 Alt）
 
-    注意：本函数运行在低级钩子回调里，全程必须极快。
-    这里只能调 release_fast（纯 keyup，不加锁不睡眠）——调带锁的 release
-    会让回调卡到 300ms 以上，被系统静默摘除，整个钩子就此失效。
+    返回 True 表示这个键被「吸收」了：它只用来收尾，本身的动作不再执行。
+    这样语音刚上屏时误按方向键/退格，就不会连带改掉刚说的话。
+
+    修饰键不触发，否则我们自己注入的 Ctrl/Win/Alt 会立刻把刚打开的状态关掉。
+    Alt+Tab 阶段的方向键与 Tab 也不触发 —— 那是用来选窗口的。
+
+    注意：本函数运行在低级钩子回调里，全程必须极快，只能调 release_fast
+    （纯 keyup、不加锁不睡眠）。
     """
+    consumed = False
     if VOICE.held and vk not in STAGE_KEEP_MODS:
         try:
             VOICE.release_fast("被其他按键打断")
@@ -339,8 +355,80 @@ def preempt_stages(vk):
             # 兜底：无论如何必须把 Ctrl/Win 松开，否则整个键盘都会变成快捷键
             log("打断语音失败(%r)，强制松开修饰键" % (e,))
             VOICE._force_release("打断失败兜底")
+        consumed = True
     if ALT_TAB_ARMED and vk not in ALT_TAB_KEEP:
         alt_tab_commit("被其他按键打断")
+        consumed = True
+    return consumed
+
+
+# ---------------- 前台进程（按应用选择剪贴板快捷键） ----------------
+u32.GetForegroundWindow.restype = wintypes.HWND
+u32.GetForegroundWindow.argtypes = ()
+u32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+k32.OpenProcess.restype = ctypes.c_void_p
+k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+k32.QueryFullProcessImageNameW.argtypes = (ctypes.c_void_p, wintypes.DWORD,
+                                           wintypes.LPWSTR,
+                                           ctypes.POINTER(wintypes.DWORD))
+k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+k32.CloseHandle.argtypes = (ctypes.c_void_p,)
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+# Chromium / Gecko 系浏览器都不认 Ctrl+Insert，只能用 Ctrl+C/V。
+# 其余应用（含所有终端、VS Code）走 Ctrl+Insert / Shift+Insert —— 在终端里
+# Ctrl+C 是 SIGINT，会把正在运行的编译或任务直接打断，代价太大。
+BROWSER_EXES = {
+    "chrome.exe", "msedge.exe", "firefox.exe", "brave.exe", "opera.exe",
+    "vivaldi.exe", "iexplore.exe", "360se.exe", "360chrome.exe",
+    "qqbrowser.exe", "sogouexplorer.exe", "liebao.exe", "maxthon.exe",
+}
+
+
+def foreground_process_name():
+    """前台窗口的进程名（小写）；取不到时返回空串。"""
+    try:
+        hwnd = u32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        pid = wintypes.DWORD()
+        u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return ""
+        h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        if not h:
+            return ""
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(1024)
+            if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                return os.path.basename(buf.value).lower()
+        finally:
+            k32.CloseHandle(h)
+    except Exception:
+        return ""
+    return ""
+
+
+def foreground_is_browser():
+    return foreground_process_name() in BROWSER_EXES
+
+
+def tap_copy():
+    """浏览器用 Ctrl+C，其他一律 Ctrl+Insert。"""
+    if foreground_is_browser():
+        tap_chord((VK_CONTROL,), VK_C)
+    else:
+        tap_chord((VK_CONTROL,), VK_INSERT)
+
+
+def tap_paste():
+    """浏览器用 Ctrl+V，其他一律 Shift+Insert。"""
+    if foreground_is_browser():
+        tap_chord((VK_CONTROL,), VK_V)
+    else:
+        tap_chord((VK_SHIFT,), VK_INSERT)
 
 
 def tap_key(vk, extra=0):
@@ -349,10 +437,13 @@ def tap_key(vk, extra=0):
     _send(vk, up=True, extra=extra)
 
 
-# 源 VK -> (种类, 目标 VK, 模式, 日志文案)。
-# 种类 key=敲一个键，right_click=发鼠标右键；模式 replace=吃掉原键，additive=放行。
-# 这张表由 main() 按命令行参数填充。
-KEY_ACTIONS = {}
+# 每个模式一张映射表：源 VK -> (种类, 目标, 日志文案)。
+# 种类：key=敲一个键；chord=组合键（目标是 (修饰键元组, 主键)）；
+#       copy/paste=剪贴板（按前台是否浏览器自动选快捷键）；right_click=鼠标右键。
+# 不在当前模式表里的键一律放行 —— 于是「观看模式下播放键恢复原生」这类需求
+# 不再需要单独的放行判断，往表里少写一行即可。
+# 这张表由 main() 填充。
+KEY_ACTIONS_BY_MODE = {"edit": {}, "watch": {}}
 
 # 只吃掉原生行为、动作另走一条路的源键。
 # 静音键归此类：它的切换动作改由消费者页报文（0x00E2）触发。
@@ -893,19 +984,9 @@ def on_raw_input(lparam):
         # 气泡）都会牵连正在排队的钩子回调，进而让下一次 VK 0xAD 漏给系统。
         _WORK_Q.put(("mute",))
     elif usage == USAGE_BACK:
-        if not CONSUMER_OWNED or CFG.back == "off":
-            if CFG.debug:
-                log("返回键消费者页报文（未接管，交给系统）")
-        elif KEY_MODE == "watch":
-            tap_key(VK_BROWSER_BACK, extra=MAGIC_EXTRA)
-            log("返回键 → 原生后退（观看模式）")
-        elif CFG.back == "additive":
-            tap_key(VK_BROWSER_BACK, extra=MAGIC_EXTRA)
-            tap_key(VK_ESCAPE, extra=MAGIC_EXTRA)
-            log("返回键 → 后退 + Esc（叠加）")
-        else:
-            tap_key(VK_ESCAPE, extra=MAGIC_EXTRA)
-            log("返回键 → Esc")
+        # 返回键的动作由键盘钩子（VK 0xA6）负责，这条只作调试记录
+        if CFG.debug:
+            log("返回键消费者页报文（由钩子处理）")
     elif usage in (USAGE_VOL_UP, USAGE_VOL_DOWN):
         if not CONSUMER_OWNED:
             if CFG.debug:
@@ -929,24 +1010,9 @@ def on_raw_input(lparam):
             tap_key(VK_RETURN)
             log("OK 键 → 回车")
     elif usage == USAGE_PLAY_PAUSE:
-        if not CONSUMER_OWNED:
-            # 老路径：Windows 已把它翻译成 VK 0xB3，由键盘钩子拦截并改发。
-            # 这里同时收到消费者页报文是正常的，不能重复处理，也不该报「未处理」。
-            if CFG.debug:
-                log("播放键消费者页报文（已由钩子处理）%s" % data.hex(" "))
-        elif CFG.play == "none":
-            pass
-        elif KEY_MODE == "watch":
-            # 观看模式恢复原生媒体控制；带标记注入，钩子认出来会直接放行
-            tap_key(VK_MEDIA_PLAY_PAUSE, extra=MAGIC_EXTRA)
-            log("播放键 → 原生媒体控制（观看模式）")
-        elif CFG.play == "additive":
-            tap_key(VK_MEDIA_PLAY_PAUSE, extra=MAGIC_EXTRA)
-            tap_key(VK_RETURN, extra=MAGIC_EXTRA)
-            log("播放键 → 回车（叠加，原生媒体也发）")
-        else:
-            tap_key(VK_RETURN, extra=MAGIC_EXTRA)
-            log("播放键 → 回车")
+        # 播放键的动作由键盘钩子（VK 0xB3）负责，这条只作调试记录
+        if CFG.debug:
+            log("播放键消费者页报文（由钩子处理）")
     else:
         # 其余消费者码原样交给系统，只在调试时记录
         if CFG.debug:
@@ -977,19 +1043,13 @@ def low_level_proc(n_code, w_param, l_param):
                 log("钩子看到按键 VK=0x%02X（录音中=%s，AltTab=%s）"
                     % (kb.vkCode, VOICE.held, ALT_TAB_ARMED))
             try:
-                preempt_stages(kb.vkCode)
+                if preempt_stages(kb.vkCode):
+                    # 这个键被用来收尾了，动作不再执行（否则语音刚上屏时
+                    # 一个方向键/退格就会改掉刚说出来的那句话）
+                    return 1
             except Exception as e:
                 log("抢占逻辑出错: %r" % (e,))
-        # 观看模式下播放键回归原生媒体控制，完全不拦
-        if KEY_MODE == "watch" and kb.vkCode == VK_MEDIA_PLAY_PAUSE:
-            return u32.CallNextHookEx(None, n_code, w_param, l_param)
-        # 观看模式下返回键也是原生的（浏览器后退），不发 Esc
-        if KEY_MODE == "watch" and kb.vkCode == VK_BROWSER_BACK:
-            return u32.CallNextHookEx(None, n_code, w_param, l_param)
-        # 观看模式下菜单/灯泡键也是原生的（AppsKey 弹焦点菜单）
-        if KEY_MODE == "watch" and kb.vkCode == VK_APPS:
-            return u32.CallNextHookEx(None, n_code, w_param, l_param)
-        # 观看模式下，上/下键不发给系统，改成滚轮
+        # 观看模式下，上/下键不发给系统，改成滚轮（这条是特殊行为，不进映射表）
         if KEY_MODE == "watch" and kb.vkCode in (VK_UP, VK_DOWN):
             if w_param in (0x0100, 0x0104) and HWND:
                 u32.PostMessageW(HWND, WM_APP_KEYMAP, kb.vkCode, 0)
@@ -1000,16 +1060,14 @@ def low_level_proc(n_code, w_param, l_param):
                 # 钩子回调里写日志本身就是阻塞源，只在显式诊断时开
                 log("钩子拦截 0x%02X（dwExtraInfo=0x%X）" % (kb.vkCode, kb.dwExtraInfo))
             return 1
-        act = KEY_ACTIONS.get(kb.vkCode)
+        act = KEY_ACTIONS_BY_MODE.get(KEY_MODE, {}).get(kb.vkCode)
         if act is not None:
             # 不在这里做注入：钩子回调有 300ms 超时限制（超时会被系统静默摘除），
             # 转给消息循环处理，回调立刻返回。
             if w_param in (0x0100, 0x0104):        # WM_KEYDOWN / WM_SYSKEYDOWN
                 if HWND:
                     u32.PostMessageW(HWND, WM_APP_KEYMAP, kb.vkCode, 0)
-            # replace：吃掉原键，原功能收不到；additive：放行，原功能保留
-            if act[2] == "replace":
-                return 1
+            return 1        # 表里有的键一律吃掉原功能
     return u32.CallNextHookEx(None, n_code, w_param, l_param)
 
 
@@ -1037,8 +1095,10 @@ def wndproc(hwnd, msg, wparam, lparam):
     global _last_wheel_log
     if msg == WM_TRAYICON:
         ev = lparam & 0xFFFF
-        if ev == 0x0203:                 # WM_LBUTTONDBLCLK：双击打开日志
-            open_log()
+        if ev == 0x0202:                 # WM_LBUTTONUP：左键单击切换模式
+            # 改用单击而不是双击：双击会先触发一次 LBUTTONUP 再触发 DBLCLK，
+            # 两次切换等于没切。日志入口挪到右键菜单里，功能没有损失。
+            toggle_mode()
         elif ev == 0x0205:               # WM_RBUTTONUP：右键菜单
             show_tray_menu(hwnd)
         return 0
@@ -1061,9 +1121,10 @@ def wndproc(hwnd, msg, wparam, lparam):
             except Exception as e:
                 log("注入滚轮失败: %r" % (e,))
             return 0
-        act = KEY_ACTIONS.get(wparam)
+        # 按下时的模式快照：消息排队期间用户可能又切了模式
+        act = KEY_ACTIONS_BY_MODE.get(KEY_MODE, {}).get(wparam)
         if act is not None:
-            kind, target, mode, text = act
+            kind, target, text = act
             try:
                 if kind == "right_click":
                     tap_right_click()
@@ -1071,13 +1132,15 @@ def wndproc(hwnd, msg, wparam, lparam):
                     toggle_mode()
                     return 0
                 elif kind == "chord":
-                    spec = CHORD_ACTIONS.get(wparam)
-                    if spec:
-                        tap_chord(spec[0], spec[1])
+                    mods, main_vk = target
+                    tap_chord(mods, main_vk)
+                elif kind == "copy":
+                    tap_copy()
+                elif kind == "paste":
+                    tap_paste()
                 else:
                     tap_key(target)
-                log("%s%s" % (text, "（原键已拦截）" if mode == "replace"
-                              else "（叠加，原功能保留）"))
+                log("%s" % text)
             except Exception as e:
                 log("注入失败（%s）: %r" % (text, e))
         return 0
@@ -1357,9 +1420,18 @@ def show_tray_menu(hwnd):
         return
     try:
         u32.AppendMenuW(menu, MF_STRING, MENU_OPEN_LOG, "打开日志")
-        wheel_on = MF_CHECKED if KEY_MODE == "watch" else 0
-        u32.AppendMenuW(menu, MF_STRING | wheel_on, MENU_KEY_MODE,
-                        "上/下键用滚轮（现在是%s）" % mode_text())
+
+        # 模式做成子菜单里的互斥项：外面只写「模式」，进去再选
+        sub = u32.CreatePopupMenu()
+        if sub:
+            edit_flags = MF_STRING | (MF_CHECKED if KEY_MODE == "edit" else 0)
+            watch_flags = MF_STRING | (MF_CHECKED if KEY_MODE == "watch" else 0)
+            u32.AppendMenuW(sub, edit_flags, MENU_MODE_EDIT, "编辑模式")
+            u32.AppendMenuW(sub, watch_flags, MENU_MODE_WATCH, "观看模式")
+            u32.AppendMenuW(menu, MF_POPUP, sub.value, "模式")
+        else:
+            log("创建模式子菜单失败，本次菜单不含模式项")
+
         flags = MF_STRING | (MF_CHECKED if autostart_enabled() else 0)
         u32.AppendMenuW(menu, flags, MENU_AUTOSTART, "开机自启动")
         u32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
@@ -1375,6 +1447,7 @@ def show_tray_menu(hwnd):
         if cmd:
             handle_menu(cmd)
     finally:
+        # 父菜单销毁时会连带销毁子菜单，不需要单独 DestroyMenu(sub)
         u32.DestroyMenu(menu)
 
 
@@ -1382,8 +1455,10 @@ def handle_menu(cmd):
     global FLAG_QUIT
     if cmd == MENU_OPEN_LOG:
         open_log()
-    elif cmd == MENU_KEY_MODE:
-        toggle_mode()
+    elif cmd == MENU_MODE_EDIT:
+        set_mode("edit")
+    elif cmd == MENU_MODE_WATCH:
+        set_mode("watch")
     elif cmd == MENU_AUTOSTART:
         want = not autostart_enabled()
         if set_autostart(want):
@@ -1444,7 +1519,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--vid", default="1915")
     ap.add_argument("--pid", default="1025")
-    ap.add_argument("--play", choices=["replace", "additive", "none"], default="replace")
     ap.add_argument("--debug-keys", dest="debug_keys", action="store_true",
                     default=False, help="在日志里打印钩子看到的每个按键（排查用）")
     ap.add_argument("--silent-key", dest="silent_key", choices=["mode", "mute"],
@@ -1453,13 +1527,6 @@ def main():
     ap.add_argument("--ok", dest="ok_mode", choices=["alt-tab", "enter", "off"],
                     default="alt-tab",
                     help="飞鼠关闭时的 OK 键：alt-tab=窗口切换；enter=回车；off=不处理")
-    ap.add_argument("--menu", dest="menu_key", choices=["search", "right", "keep"],
-                    default="search",
-                    help="菜单/灯泡键：search=编辑模式发 Ctrl+Alt+K、观看模式保持原生（默认）；"
-                         "right=固定发鼠标右键；keep=完全不接管")
-    ap.add_argument("--back", choices=["esc", "additive", "off"], default="esc",
-                    help="返回键：esc=编辑模式发 Esc（默认，观看模式仍后退）；"
-                         "additive=两者都发；off=不接管")
     ap.add_argument("--voice", dest="voice", action="store_true", default=True)
     ap.add_argument("--no-voice", dest="voice", action="store_false")
     ap.add_argument("--voice-mode", choices=["toggle", "hold"], default="toggle",
@@ -1479,29 +1546,32 @@ def main():
 
     _logf = open(LOG_PATH, "a", encoding="utf-8")
     log("=" * 50)
-    back_desc = {"esc": "Esc(编辑)/原生(观看)", "additive": "Esc+后退", "off": "不接管"}[CFG.back]
-    log("启动：设备 %s:%s  播放键=%s  返回键=%s  OK键=%s  语音键=%s（%s）%s%s"
-        % (CFG.vid.upper(), CFG.pid.upper(), CFG.play, back_desc, CFG.ok_mode,
+    log("启动：设备 %s:%s  OK键=%s  语音键=%s（%s）%s%s"
+        % (CFG.vid.upper(), CFG.pid.upper(), CFG.ok_mode,
            "开" if CFG.voice else "关", CFG.voice_mode,
            "  [dry-run]" if CFG.dry_run else "",
            "  [own]" if CFG.own else ""))
 
-    # 组装映射表：源 VK -> (目标 VK, 模式, 日志文案)
-    if CFG.play != "none":
-        KEY_ACTIONS[VK_MEDIA_PLAY_PAUSE] = ("key", VK_RETURN, CFG.play, "播放键 → 回车")
-    if CFG.back != "off":
-        # 编辑模式下替换原生后退；观看模式由钩子直接放行，走不到这里
-        back_mode = "replace" if CFG.back == "esc" else "additive"
-        KEY_ACTIONS[VK_BROWSER_BACK] = ("key", VK_ESCAPE, back_mode, "返回键 → Esc")
+    # ---- 键位表：按模式区分，不在表里的键一律放行原生 ----
+    edit = KEY_ACTIONS_BY_MODE["edit"]
+    watch = KEY_ACTIONS_BY_MODE["watch"]
+
+    # 编辑模式：写作 / 编码。灯泡键最好按，留给最高频的回车
+    edit[VK_APPS] = ("key", VK_RETURN, "灯泡键 → 回车")
+    edit[VK_MEDIA_PLAY_PAUSE] = ("chord", ((VK_CONTROL, VK_MENU), VK_K),
+                                 "播放键 → Ctrl+Alt+K（全局搜索）")
+    edit[VK_BROWSER_BACK] = ("key", VK_ESCAPE, "返回键 → Esc")
+    edit[VK_PRIOR] = ("copy", 0, "PgUp → 复制")
+    edit[VK_NEXT] = ("paste", 0, "PgDn → 粘贴")
+
+    # 观看模式：浏览 / 看视频。播放键与返回键不写进表 → 自动保持原生
+    watch[VK_APPS] = ("chord", ((VK_CONTROL, VK_SHIFT), VK_T),
+                      "灯泡键 → 恢复关闭的标签页")
+    watch[VK_DELETE] = ("right_click", 0, "DEL → 右键菜单")
+
     if CFG.silent_key == "mode" and not CFG.keep_mute_native:
         # 动作改由消费者页 0x00E2 触发（见 on_raw_input），钩子这边只负责吃掉原生 0xAD
         INTERCEPT_ONLY.add(VK_MUTE)
-    if CFG.menu_key == "right":
-        KEY_ACTIONS[VK_APPS] = ("right_click", 0, "replace", "菜单键 → 鼠标右键")
-    elif CFG.menu_key == "search":
-        # 只在编辑模式生效：观看模式由钩子直接放行
-        KEY_ACTIONS[VK_APPS] = ("chord", 0, "replace", "菜单键 → Ctrl+Alt+K（搜索）")
-        CHORD_ACTIONS[VK_APPS] = ((VK_CONTROL, VK_MENU), VK_K)
 
     # 单实例保护：两份进程同时跑会让每次按键被注入两次
     if not CFG.allow_multi:
@@ -1535,7 +1605,7 @@ def main():
         try:
             TRAY_HWND = make_tray_window()
             add_tray(TRAY_HWND)
-            log("托盘图标已显示（右键可退出，双击打开日志）")
+            log("托盘图标已显示（单击切模式，右键菜单）")
             refresh_tray_text()
             promote_tray_async(TRAY_HWND)
         except Exception as e:
@@ -1549,18 +1619,11 @@ def main():
     threading.Thread(target=work_loop, name="mute-worker", daemon=True).start()
 
     hook = None
-    if KEY_ACTIONS or INTERCEPT_ONLY:
+    if any(KEY_ACTIONS_BY_MODE.values()) or INTERCEPT_ONLY:
         hook = install_hook()
-        for src, (kind, target, mode, text) in KEY_ACTIONS.items():
-            if kind == "right_click":
-                dst = "鼠标右键"
-            elif kind == "toggle_mode":
-                dst = "切换上/下键模式"
-            elif kind == "chord":
-                dst = "Ctrl+Alt+K"
-            else:
-                dst = "0x%02X" % target
-            log("已映射 0x%02X → %s  %s（%s）" % (src, dst, text, mode))
+        for m, label in (("edit", "编辑"), ("watch", "观看")):
+            for src, (kind, target, text) in KEY_ACTIONS_BY_MODE[m].items():
+                log("已映射[%s] 0x%02X → %s" % (label, src, text))
         for src in sorted(INTERCEPT_ONLY):
             log("已拦截 0x%02X（吃掉原生键，动作由消费者页报文触发）" % src)
         log("当前模式：%s" % mode_text())
