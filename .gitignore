@@ -16,3 +16,6 @@ app-preview*.png
 # ---------- Python ----------
 __pycache__/
 *.py[cod]
+
+# WorkBuddy 内部工作日志/记忆，不随仓库公开
+.workbuddy/
