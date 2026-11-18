@@ -623,16 +623,21 @@ def refresh_endpoint_if_changed(reset_baseline=True):
     """
     global EXPECTED_MUTE
     cur = default_device_id()
-    if cur is None or cur == getattr(_TLS, "dev_id", None):
+    cached = getattr(_TLS, "dev_id", None)
+    if cur is None or cur == cached:
         return False
+    first_time = cached is None          # 该线程首次建端点，不算「设备变化」
     _TLS.vol = None
     _TLS.failed = False
     _TLS.dev_id = None
     m = get_mute()                       # 会触发按新设备重建
     if m is not None and reset_baseline:
         EXPECTED_MUTE = m
-    log("默认输出设备已变化，重建音频端点%s"
-        % ("，静音基线重置为 %s" % m if (reset_baseline and m is not None) else ""))
+    if first_time:
+        log("音频端点就绪，静音基线 %s" % m)
+    else:
+        log("默认输出设备已变化，重建音频端点%s"
+            % ("，静音基线重置为 %s" % m if (reset_baseline and m is not None) else ""))
     return True
 
 
