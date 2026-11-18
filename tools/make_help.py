@@ -3,15 +3,25 @@
 产物会被 build.bat 打进 exe，运行时由 bridge.py 的 open_help() 打开，
 不产生任何外部文件。
 
+设计要点：
+- 遥控器图是从原图裁掉白边后的 assets/remote-crop.jpg，本体撑满画布；
+- 卡片用按键锚点定位，JS 兜底推开重叠；
+- 连线在运行时按 DOM 实际像素坐标绘制（viewBox = 真实尺寸），
+  因此线宽恒定、端点精准、窗口缩放自动重算；
+- hover 卡片会高亮对应连线与遥控器上的按键光圈。
+
 用法：python tools/make_help.py
 """
 import base64
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-REMOTE = os.path.join(ROOT, "assets", "remote.jpg")
+REMOTE = os.path.join(ROOT, "assets", "remote-crop.jpg")
 ICON_DIALOG = os.path.join(ROOT, "app-preview-dialog.png")
 ICON_WATCH = os.path.join(ROOT, "app-preview-watch.png")
+WHALE = os.path.join(ROOT, "assets", "whale-chan.png")
+QR_WECHAT = os.path.join(ROOT, "assets", "qr-wechat-crop.jpg")
+QR_ALIPAY = os.path.join(ROOT, "assets", "qr-alipay-crop.jpg")
 OUT = os.path.join(ROOT, "help.html")
 
 
@@ -20,167 +30,289 @@ def data_uri(path, mime):
         return "data:%s;base64,%s" % (mime, base64.b64encode(f.read()).decode())
 
 
-# 各键的坐标，单位是「裁剪后容器」的百分比 —— 用带 10% 网格的标定图
-# 逐个读出来的，不再靠目测原图换算（换算基准一错，圆圈就整体偏移）。
+# 按键中心点，单位是「裁剪后遥控器图」的百分比 —— 从叠加 10% 网格的标定图上读出。
+# 连线终点就用这些坐标定位，务必与图片保持一致。
 KEY = {
-    "power":  (42.0, 11.0),
-    "play":   (40.0, 17.0),
-    "back":   (62.0, 17.0),
-    "ring":   (50.0, 28.0),   # 方向环中心，也是 OK 键
-    "ret":    (36.0, 41.0),   # 房子 + 弯箭头
-    "lamp":   (63.0, 41.0),   # ≡ + 灯泡
-    "pgup":   (37.0, 48.0),
-    "pgdn":   (37.0, 55.0),
-    "mic":    (50.0, 51.0),
-    "volup":  (65.0, 48.0),
-    "voldn":  (65.0, 55.0),
-    "del":    (42.0, 62.0),
-    "mute":   (60.0, 62.0),
+    "power": (28.0, 12.0),
+    "play": (30.0, 16.5),
+    "back": (70.0, 16.5),   # 右上角飞鼠 / 陀螺仪开关，未接管
+    "ring": (50.0, 29.0),   # 方向环中心，也是 OK 键
+    "dir": (42.0, 29.0),    # 方向环左箭头：左 / 右方向
+    "ret": (30.0, 41.0),    # 房子 + 弯箭头
+    "lamp": (70.0, 41.0),   # ≡ + 灯泡
+    "pgup": (30.0, 48.0),
+    "pgdn": (30.0, 55.0),
+    "pgpair": (30.0, 51.5),  # PgUp / PgDn 合起来讲时的锚点
+    "mic": (50.0, 54.0),
+    "volup": (75.0, 48.0),
+    "voldn": (75.0, 55.0),
+    "volpair": (75.0, 51.5),  # VOL+ / VOL- 合起来讲时的锚点
+    "del": (43.0, 65.0),
+    "mute": (62.0, 65.0),
 }
 
-
+# 每行：(按键锚点, 按键名, 映射动作, 说明, 是否被程序接管)
+# kind = "on" 接管（实线 + 主题色）/ "off" 原生（虚线 + 灰）
 DIALOG_LEFT = [
-    ("play", 17.0, "播放", "Ctrl+N", "新建对话"),
-    ("ret", 41.0, "返回", "Esc", "打断 AI 输出"),
-    ("pgup", 51.5, "PgUp / PgDn", "Ctrl+[ / Ctrl+]", "上一个 / 下一个对话"),
+    ("power", "电源", "—", "红外信号，蓝牙连接下无效", "off"),
+    ("play", "播放", "Ctrl+N", "新建对话", "on"),
+    ("dir", "左 / 右方向", "—", "移动光标", "off"),
+    ("ret", "返回", "Esc", "打断 AI 输出", "on"),
+    ("pgpair", "PgUp / PgDn", "Ctrl+[ / Ctrl+]", "上一个 / 下一个对话", "on"),
+    ("del", "DEL", "—", "退格，删掉刚打错的字", "off"),
 ]
-
 DIALOG_RIGHT = [
-    ("ring", 28.0, "方向环 / OK", "方向键 / Alt+Tab", "走光标；中间 OK 切窗口"),
-    ("lamp", 41.0, "灯泡", "回车", "发送消息（最好按的键给最高频）"),
-    ("mic", 51.0, "麦克风", "Ctrl+Win", "语音输入，按一下开始、再按一下结束"),
-    ("mute", 62.0, "静音", "—", "切换模式，不动音量"),
+    ("back", "飞鼠开关", "—", "开启陀螺仪控制鼠标；开启后 OK 键变鼠标左键", "off"),
+    ("ring", "方向环 / OK", "方向键 / Alt+Tab", "走光标；中间 OK 切窗口", "on"),
+    ("lamp", "灯泡", "回车", "发送消息", "on"),
+    ("mic", "麦克风", "Ctrl+Win", "语音输入，按一下开始、再按一下结束", "on"),
+    ("volpair", "VOL + / −", "—", "音量加减", "off"),
+    ("mute", "静音", "—", "切换模式，不动音量", "on"),
 ]
-
 WATCH_LEFT = [
-    ("play", 17.0, "播放", "播放 / 暂停", "原生媒体控制"),
-    ("ret", 41.0, "返回", "浏览器后退", "回到上一页"),
-    ("pgup", 51.5, "PgUp / PgDn", "Ctrl+Tab / Ctrl+Shift+Tab", "下一个 / 上一个标签页"),
+    ("power", "电源", "—", "红外信号，蓝牙连接下无效", "off"),
+    ("play", "播放", "播放 / 暂停", "原生媒体控制", "on"),
+    ("dir", "左 / 右方向", "—", "光标移动、视频快进", "off"),
+    ("ret", "返回", "浏览器后退", "回到上一页", "on"),
+    ("pgpair", "PgUp / PgDn", "Ctrl+Tab / Ctrl+Shift+Tab", "下一个 / 上一个标签页", "on"),
+    ("del", "DEL", "—", "退格", "off"),
 ]
-
 WATCH_RIGHT = [
-    ("ring", 28.0, "上 / 下", "滚轮", "滚动页面，比翻页更顺"),
-    ("lamp", 41.0, "灯泡", "回车", "确认输入框里的内容"),
-    ("mic", 51.0, "麦克风", "Ctrl+Win", "语音输入"),
-    ("mute", 62.0, "静音", "—", "切换模式，不动音量"),
+    ("back", "飞鼠开关", "—", "开启陀螺仪控制鼠标；开启后 OK 键变鼠标左键", "off"),
+    ("ring", "上 / 下", "滚轮", "滚动页面，比翻页更顺", "on"),
+    ("lamp", "灯泡", "回车", "确认输入框里的内容", "on"),
+    ("mic", "麦克风", "Ctrl+Win", "语音输入", "on"),
+    ("volpair", "VOL + / −", "—", "音量加减", "off"),
+    ("mute", "静音", "—", "切换模式，不动音量", "on"),
 ]
 
 
-def build_side(rows, side, accent):
-    """生成一侧的卡片与连线。
-
-    side="left" 表示这些键位于遥控器左半边：线从卡片右沿连到按键；
-    side="right" 相反。中间列（遥控器图）占 30%~70%。
-    """
-    cards, lines = [], []
-    for key, cy, name, action, desc in rows:
-        bx, by = KEY[key]
-        px = 37.0 + bx * 0.26           # 遥控器列占整宽的 37%~63%
-        edge = 37.0 if side == "left" else 63.0
-        cards.append(
-            '<div class="card" style="top:%.1f%%">'
-            '<div class="k">%s</div><div class="v" style="color:%s">%s</div>'
+def build_cards(rows):
+    """生成一侧的卡片。top 先用按键锚点的 y%，运行时 JS 会推开重叠。"""
+    out = []
+    for key, name, action, desc, kind in rows:
+        pos = KEY[key][1]
+        out.append(
+            '<div class="card %s" data-key="%s" data-kind="%s" data-pos="%.1f" '
+            'style="top:%.1f%%">'
+            '<div class="r1"><span class="k">%s</span><span class="v">%s</span></div>'
             '<div class="d">%s</div></div>'
-            % (cy, name, accent, action, desc))
-        lines.append(
-            '<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="%s" '
-            'stroke-width=".9" opacity=".45"/>'
-            '<circle cx="%.1f" cy="%.1f" r="2.4" fill="none" stroke="%s" '
-            'stroke-width="1" opacity=".75"/>'
-            % (edge, cy, px, by, accent, px, by, accent))
-    return "\n".join(cards), "\n".join(lines)
+            % (kind, key, kind, pos, pos, name, action, desc))
+    return "\n".join(out)
+
+
+def build_anchors():
+    """遥控器图上的透明锚点，中心对准按键，供连线与 hover 高亮定位。"""
+    out = []
+    for key, (x, y) in KEY.items():
+        out.append('<i class="anchor" data-key="%s" style="left:%.1f%%;top:%.1f%%"></i>'
+                   % (key, x, y))
+    return "\n".join(out)
 
 
 TPL = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>G10S 遥控器按键说明</title>
 <style>
-  * { box-sizing: border-box; }
+  :root {
+    --ink:#1f2328; --muted:#57606a; --faint:#8b949e;
+    --line:#e3e5e8; --bg:#f4f5f7;
+  }
+  * { box-sizing:border-box; }
   body {
-    margin: 0; padding: 0 0 60px;
-    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-    background: #f4f5f7; color: #1f2328;
+    margin:0; padding:0 0 64px; background:var(--bg); color:var(--ink);
+    font:14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   }
-  header { background: #fff; border-bottom: 1px solid #e3e5e8; padding: 18px 28px 0; }
-  h1 { margin: 0 0 14px; font-size: 19px; font-weight: 600; letter-spacing: .3px; }
-  nav { display: flex; gap: 4px; }
+  .topbar { background:#fff; border-bottom:1px solid var(--line); }
+  .topbar-inner { max-width:1120px; margin:0 auto; padding:20px 28px 0; }
+  h1 { margin:0 0 2px; font-size:20px; font-weight:650; letter-spacing:.2px; }
+  .sub { margin:0 0 16px; color:var(--muted); font-size:12.5px; }
+  nav { display:flex; gap:6px; justify-content:center; }
   nav button {
-    border: 0; background: none; padding: 9px 16px; font: inherit; font-weight: 500;
-    color: #57606a; cursor: pointer; border-bottom: 2px solid transparent;
+    border:1px solid transparent; border-bottom:0; background:none;
+    padding:9px 17px; border-radius:9px 9px 0 0; font:inherit; font-weight:550;
+    color:var(--muted); cursor:pointer; transition:background .15s,color .15s;
   }
-  nav button:hover { color: #1f2328; }
-  nav button.on { color: #1f2328; border-bottom-color: #1f2328; }
-  main { max-width: 1080px; margin: 0 auto; padding: 26px 20px; }
-  section { display: none; }
-  section.on { display: block; }
+  nav button:hover { color:var(--ink); background:#f6f7f9; }
+  nav button.on { color:var(--ink); background:var(--bg); border-color:var(--line); }
+  main { max-width:1120px; margin:0 auto; padding:26px 28px; }
+  section { display:none; }
+  section.on { display:block; }
+  .lead { margin:0; color:var(--muted); font-size:13.5px; }
+  .lead b { color:var(--ink); }
 
   /* ---- 模式切换页 ---- */
-  .modes { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin: 22px 0 8px; }
+  .modes { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px;
+           margin:22px auto 0; max-width:860px; }
+  section#p1 > .lead { text-align:center; }
   .mode {
-    background: #fff; border: 1px solid #e3e5e8; border-radius: 12px;
-    padding: 22px; text-align: center;
+    display:flex; flex-direction:column; align-items:center; text-align:center;
+    background:#fff; border:1px solid var(--line); border-radius:14px; padding:24px 18px;
+    box-shadow:0 1px 3px rgba(27,31,36,.04); min-height:216px;
   }
-  .mode img { width: 84px; height: 84px; border-radius: 18px; }
-  .mode h3 { margin: 14px 0 4px; font-size: 16px; }
-  .mode p { margin: 0; color: #57606a; font-size: 13px; }
+  .mode img { width:76px; height:76px; border-radius:18px; flex:none;
+              box-shadow:0 2px 10px rgba(27,31,36,.14); }
+  .mode h3 { margin:14px 0 5px; font-size:16px; }
+  .mode p { margin:0; color:var(--muted); font-size:12.5px; line-height:1.55; }
+  .mode.soon {
+    justify-content:center; background:#fafbfc; border-style:dashed;
+    box-shadow:none; color:var(--faint);
+  }
+  .mode.soon .soon-ico { font-size:34px; line-height:1; opacity:.55; }
+  .mode.soon h3 { color:var(--muted); }
   .switch-how {
-    background: #fff; border: 1px solid #e3e5e8; border-radius: 12px;
-    padding: 20px 24px; margin-top: 18px;
+    position:relative; max-width:860px; background:#fff; border:1px solid var(--line);
+    border-radius:14px; padding:20px 24px 18px 26px; margin:18px auto 0; overflow:hidden;
   }
-  .switch-how h3 { margin: 0 0 10px; font-size: 15px; }
-  .switch-how ol { margin: 0; padding-left: 20px; color: #38414a; }
-  .switch-how li { margin: 6px 0; }
+  .switch-how::before { content:""; position:absolute; left:0; top:0; bottom:0;
+                        width:3px; background:#5b8def; }
+  .switch-how h3 { margin:0 0 10px; font-size:15px; }
+  .switch-how ol { margin:0; padding-left:20px; color:#38414a; }
+  .switch-how li { margin:6px 0; }
   kbd {
-    display: inline-block; padding: 1px 7px; margin: 0 2px; border-radius: 5px;
-    background: #eef0f3; border: 1px solid #dcdfe4; font: 12px/1.7 ui-monospace, Consolas, monospace;
+    display:inline-block; padding:1px 7px; margin:0 2px; border-radius:5px;
+    background:#eef0f3; border:1px solid #dcdfe4;
+    font:12px/1.7 ui-monospace, Consolas, monospace;
   }
-  .hint { margin-top: 14px; padding: 12px 14px; border-radius: 9px;
-          background: #fff8e6; border: 1px solid #f0dfae; color: #6b5417; font-size: 13px; }
+  .hint { margin-top:14px; padding:12px 14px; border-radius:9px;
+          background:#fff8e6; border:1px solid #f0dfae; color:#6b5417; font-size:12.5px; }
 
-  /* ---- 连线图：左说明 · 遥控器 · 右说明 ---- */
-  /* 图片四周有大片白边，遥控器只占中间一块，所以容器按那个比例定高、
-     object-fit: cover 裁掉白边，遥控器才能撑满这一列。
-     .col 里全是绝对定位元素，高度靠 grid 的 stretch 撑满行高（行高由图片列决定）。 */
-  .stage { position: relative; display: grid; grid-template-columns: 37% 26% 37%; }
-  .col { position: relative; }
-  .remote { position: relative; aspect-ratio: 42 / 96; }
-  .remote img { display: block; width: 100%; height: 100%; object-fit: cover;
-                object-position: center; border-radius: 10px; }
-  .lines { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+  /* ---- 连线图 ---- */
+  .stage {
+    --accent:#24A15A;
+    position:relative; display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);
+    gap:30px; align-items:stretch; margin-top:24px;
+  }
+  .stage[data-mode="watch"] { --accent:#2563C7; }
+  .side { position:relative; min-width:0; }
+  .remote-frame {
+    position:relative; height:720px; aspect-ratio:379/1164; margin:0 auto;
+    border-radius:20px; background:#fafbfc;
+    box-shadow:0 3px 18px rgba(27,31,36,.10), 0 0 0 1px rgba(27,31,36,.06);
+  }
+  .remote-frame img { display:block; width:100%; height:100%;
+                      object-fit:cover; border-radius:20px; }
+  .anchor {
+    position:absolute; width:15px; height:15px; margin:-7.5px 0 0 -7.5px;
+    border-radius:50%; border:1.5px solid var(--accent);
+    background:rgba(255,255,255,.6); z-index:3; pointer-events:none;
+    opacity:0; transform:scale(.6); transition:opacity .18s,transform .18s;
+    box-shadow:0 0 0 4px rgba(255,255,255,.35);
+  }
+  .anchor.show { opacity:1; transform:scale(1); }
+  .wires { position:absolute; inset:0; width:100%; height:100%;
+           z-index:2; pointer-events:none; overflow:visible; }
+  .wire { fill:none; stroke:var(--accent); stroke-width:1.6; stroke-linecap:round;
+          opacity:.34; transition:opacity .18s,stroke-width .18s; }
+  .wire.hot { opacity:.95; stroke-width:2.6; }
+  .wire.off { stroke:#9aa1a9; stroke-dasharray:4 4; opacity:.42; }
+  .wire.off.hot { opacity:.95; }
+  .dot { fill:var(--accent); opacity:.65; transition:opacity .18s; }
+  .dot.off { fill:#9aa1a9; opacity:.7; }
+  .dot.hot { opacity:1; }
   .card {
-    position: absolute; left: 0; right: 0; transform: translateY(-50%);
-    background: #fff; border: 1px solid #e3e5e8; border-radius: 10px;
-    padding: 8px 12px; box-shadow: 0 1px 2px rgba(27,31,36,.05);
+    position:absolute; left:0; right:0; transform:translateY(-50%);
+    background:#fff; border:1px solid var(--line); border-radius:11px;
+    padding:9px 13px; box-shadow:0 1px 3px rgba(27,31,36,.05);
+    z-index:4; cursor:default;
+    transition:border-color .18s,box-shadow .18s;
   }
-  .col.left .card { margin-right: 12px; }
-  .col.right .card { margin-left: 12px; }
-  .card .k { font-size: 11px; color: #6e7781; letter-spacing: .3px; line-height: 1.5; }
-  .card .v { font-size: 14px; font-weight: 600; margin-top: 0; line-height: 1.4; }
-  .card .d { font-size: 11.5px; color: #57606a; margin-top: 1px; line-height: 1.45; }
-  .lead { margin: 0 0 18px; color: #57606a; font-size: 13.5px; }
-  .lead b { color: #1f2328; }
-  .native {
-    margin-top: 20px; padding: 14px 16px; background: #fff;
-    border: 1px solid #e3e5e8; border-radius: 10px;
+  .card:hover { border-color:var(--accent); box-shadow:0 5px 16px rgba(27,31,36,.11); }
+  .card .r1 { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+  .card .k { font-size:11.5px; color:var(--faint); white-space:nowrap; }
+  .card .v { font-size:14px; font-weight:650; color:var(--accent); white-space:nowrap; }
+  .card .d { font-size:11.5px; color:var(--muted); }
+  /* 原生键：弱化，但仍走同一套连线体系 */
+  .card.off { background:#fbfcfd; }
+  .card.off .v { color:#9aa1a9; font-weight:600; }
+  .card.off .k { color:#8b949e; }
+
+  .foot { margin-top:14px; color:var(--faint); font-size:12.5px; }
+
+  /* ---- 联系我 ---- */
+  .contact { max-width:760px; margin:0 auto; }
+  .contact .intro { margin-bottom:22px; text-align:center; }
+  .contact-list { display:grid; gap:12px; }
+  .contact-item {
+    display:flex; align-items:center; gap:16px; background:#fff;
+    border:1px solid var(--line); border-radius:13px; padding:16px 20px;
+    box-shadow:0 1px 3px rgba(27,31,36,.04);
   }
-  .native h4 { margin: 0 0 10px; font-size: 13px; color: #57606a; font-weight: 600; }
-  .native ul { display: flex; flex-wrap: wrap; gap: 8px 26px; margin: 0; padding: 0; list-style: none; }
-  .native li { font-size: 12.5px; color: #6e7781; }
-  .native b { color: #38414a; font-weight: 600; }
-  .foot { margin-top: 14px; color: #6e7781; font-size: 12.5px; }
+  .ci-icon {
+    width:38px; height:38px; border-radius:10px; flex:none;
+    display:flex; align-items:center; justify-content:center;
+    background:#eef3ff; color:#3b6fd4;
+  }
+  .ci-icon svg { width:21px; height:21px; }
+  .ci-body { min-width:0; }
+  .ci-label { font-size:12px; color:var(--faint); }
+  .ci-value { font-size:15px; font-weight:600; color:var(--ink);
+              user-select:all; word-break:break-all; }
+  .ci-copy {
+    margin-left:auto; flex:none; border:1px solid var(--line); background:#fff;
+    color:var(--muted); border-radius:8px; padding:5px 12px; font:inherit;
+    font-size:12px; cursor:pointer; transition:.15s;
+  }
+  .ci-copy:hover { border-color:#3b6fd4; color:#3b6fd4; }
+  .ci-copy.ok { border-color:#24A15A; color:#24A15A; }
+
+  .reward { text-align:center;
+    margin-top:26px; background:#fff; border:1px solid var(--line);
+    border-radius:16px; padding:26px 28px;
+    box-shadow:0 1px 3px rgba(27,31,36,.04);
+  }
+  .reward h3 { margin:0 0 6px; font-size:17px; }
+  .reward > p { margin:0; color:var(--muted); font-size:13.5px; }
+  .reward-main { display:flex; align-items:flex-start; justify-content:center;
+                 gap:22px; margin-top:20px; flex-wrap:wrap; }
+  .reward-whale {
+    width:180px; flex:none; border-radius:12px;
+    display:flex; align-items:center; justify-content:center; overflow:hidden;
+  }
+  .reward-whale img { max-width:100%; max-height:100%; object-fit:contain; }
+  .qr-item { flex:none; text-align:center; cursor:zoom-in; }
+  .qr-item img {
+    width:168px; height:168px; object-fit:cover; border-radius:12px; display:block;
+    border:1px solid var(--line); box-shadow:0 1px 4px rgba(27,31,36,.08);
+    transition:transform .15s,box-shadow .15s;
+  }
+  .qr-item:hover img { transform:translateY(-2px); box-shadow:0 5px 16px rgba(27,31,36,.14); }
+  .qr-item span { display:block; margin-top:7px; font-size:12px; color:var(--muted); }
+  .reward-note { font-size:12.5px; color:var(--faint); line-height:1.7; }
+
+  /* 点击放大 */
+  .lightbox {
+    position:fixed; inset:0; z-index:99; background:rgba(20,24,30,.78);
+    display:none; align-items:center; justify-content:center; padding:24px;
+    cursor:zoom-out;
+  }
+  .lightbox.on { display:flex; }
+  .lightbox img { max-width:100%; max-height:100%; object-fit:contain;
+                  border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.4); }
+
+  @media (max-width:900px){
+    .stage { grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:14px; }
+    .remote-frame { height:600px; }
+    .card { padding:7px 9px; }
+    .card .r1 { display:block; }
+    .card .v { display:block; }
+  }
 </style>
 </head>
 <body>
-<header>
+<header class="topbar"><div class="topbar-inner">
   <h1>G10S 遥控器按键说明</h1>
+  <p class="sub">同一批按键在两种模式下做不同的事 · 把鼠标移到卡片上可高亮对应按键</p>
   <nav>
     <button class="on" data-t="p1">模式切换</button>
     <button data-t="p2">对话模式</button>
     <button data-t="p3">观看模式</button>
+    <button data-t="p4">联系我</button>
   </nav>
-</header>
+</div></header>
 
 <main>
   <section id="p1" class="on">
@@ -188,13 +320,16 @@ TPL = """<!DOCTYPE html>
     <div class="modes">
       <div class="mode">
         <img src="{{ICON_DIALOG}}" alt="对话模式图标">
-        <h3>对话模式</h3>
-        <p>绿底 · 两个气泡<br>用来跟 AI 对话、发消息</p>
+        <div><h3>对话模式</h3><p>用来跟 AI 对话、发消息</p></div>
       </div>
       <div class="mode">
         <img src="{{ICON_WATCH}}" alt="观看模式图标">
-        <h3>观看模式</h3>
-        <p>蓝底 · 眼睛<br>用来浏览网页、看视频</p>
+        <div><h3>观看模式</h3><p>用来浏览网页、看视频</p></div>
+      </div>
+      <div class="mode soon">
+        <div class="soon-ico">✦</div>
+        <h3>更多模式实现中……</h3>
+        <p>敬请期待</p>
       </div>
     </div>
     <div class="switch-how">
@@ -210,48 +345,140 @@ TPL = """<!DOCTYPE html>
 
   <section id="p2">
     <p class="lead">主要面向 <b>WorkBuddy</b> 的使用场景：说话提问、发送、打断、在多个对话之间切换。</p>
-    <div class="stage">
-      <div class="col left">{{CARDS_DIALOG_LEFT}}</div>
-      <div class="remote"><img src="{{REMOTE}}" alt="遥控器"></div>
-      <div class="col right">{{CARDS_DIALOG_RIGHT}}</div>
-      <svg class="lines" viewBox="0 0 100 100" preserveAspectRatio="none">{{LINES_DIALOG}}</svg>
-    </div>
-    <div class="native">
-      <h4>这些键保持系统原生行为，本程序没有改动</h4>
-      <ul>
-        <li><b>DEL</b> 退格，删掉刚打错的字</li>
-        <li><b>VOL + / −</b> 音量加减</li>
-        <li><b>左 / 右方向</b> 移动光标</li>
-        <li><b>↻ 圆圈箭头</b> 未接管，保持原样</li>
-        <li><b>电源</b> 红外信号，蓝牙连接下无效</li>
-      </ul>
+    <div class="stage" data-mode="dialog">
+      <div class="side left">{{CARDS_DIALOG_LEFT}}</div>
+      <div class="remote-frame">
+        <img src="{{REMOTE}}" alt="遥控器">
+        {{ANCHORS}}
+      </div>
+      <div class="side right">{{CARDS_DIALOG_RIGHT}}</div>
+      <svg class="wires" aria-hidden="true"></svg>
     </div>
     <p class="foot">方向键只在编辑区生效；想看长回答请切到观看模式用滚轮滚动。</p>
   </section>
 
   <section id="p3">
     <p class="lead">主要面向 <b>Chrome 内核浏览器</b>（Chrome、Edge、Brave 等）：浏览网页、切换标签页、看视频。</p>
-    <div class="stage">
-      <div class="col left">{{CARDS_WATCH_LEFT}}</div>
-      <div class="remote"><img src="{{REMOTE}}" alt="遥控器"></div>
-      <div class="col right">{{CARDS_WATCH_RIGHT}}</div>
-      <svg class="lines" viewBox="0 0 100 100" preserveAspectRatio="none">{{LINES_WATCH}}</svg>
-    </div>
-    <div class="native">
-      <h4>这些键保持系统原生行为，本程序没有改动</h4>
-      <ul>
-        <li><b>DEL</b> 退格</li>
-        <li><b>VOL + / −</b> 音量加减</li>
-        <li><b>左 / 右方向</b> 光标移动、视频快进</li>
-        <li><b>↻ 圆圈箭头</b> 未接管，保持原样</li>
-        <li><b>电源</b> 红外信号，蓝牙连接下无效</li>
-      </ul>
+    <div class="stage" data-mode="watch">
+      <div class="side left">{{CARDS_WATCH_LEFT}}</div>
+      <div class="remote-frame">
+        <img src="{{REMOTE}}" alt="遥控器">
+        {{ANCHORS}}
+      </div>
+      <div class="side right">{{CARDS_WATCH_RIGHT}}</div>
+      <svg class="wires" aria-hidden="true"></svg>
     </div>
     <p class="foot">观看模式只接管上/下（滚轮）、灯泡、PgUp/PgDn 和静音键，其余全部交还系统。</p>
   </section>
+
+  <section id="p4">
+    <div class="contact">
+      <p class="lead intro">遇到问题、有建议，或者单纯想说句话，都欢迎联系我。</p>
+      <div class="contact-list">
+        <div class="contact-item">
+          <span class="ci-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg></span>
+          <div class="ci-body"><div class="ci-label">邮箱</div><div class="ci-value">2449663340@qq.com</div></div>
+          <button class="ci-copy" data-copy="2449663340@qq.com">复制</button>
+        </div>
+        <div class="contact-item">
+          <span class="ci-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-4-.9L3 20l1-4.5A8.4 8.4 0 0 1 3 11.5 8.5 8.5 0 0 1 12 3a8.5 8.5 0 0 1 9 8.5z"/></svg></span>
+          <div class="ci-body"><div class="ci-label">微信</div><div class="ci-value">ray2449663340</div></div>
+          <button class="ci-copy" data-copy="ray2449663340">复制</button>
+        </div>
+      </div>
+
+      <div class="reward">
+        <h3>制作不易，欢迎打赏一碗大白饭</h3>
+        <p>如果这支遥控器帮到了你，一点心意就是继续维护的动力。</p>
+        <div class="reward-main">
+          <div class="reward-whale"><img src="{{WHALE}}" alt="鲸鱼娘"></div>
+          <div class="qr-item"><img class="zoomable" src="{{QR_WECHAT}}" alt="微信收款码"><span>微信</span></div>
+          <div class="qr-item"><img class="zoomable" src="{{QR_ALIPAY}}" alt="支付宝收款码"><span>支付宝</span></div>
+          <div class="reward-note">扫码即可打赏<br>金额随意，心意领了</div>
+        </div>
+      </div>
+    </div>
+  </section>
 </main>
 
+<div class="lightbox" id="lightbox"><img id="lightboxImg" alt="放大"></div>
+
 <script>
+(function () {
+  var f = function (n) { return Math.round(n * 10) / 10; };
+
+  // 卡片按锚点 y 定位；若相邻两张挨得太近（或超出画布），沿纵向推开 / 回收。
+  function layout(side) {
+    var cards = side.querySelectorAll('.card');
+    var prevBottom = -Infinity, gap = 9;
+    for (var i = 0; i < cards.length; i++) {
+      var c = cards[i];
+      var y = parseFloat(c.dataset.pos) / 100 * side.clientHeight;
+      var h = c.offsetHeight;
+      if (y - h / 2 < prevBottom + gap) y = prevBottom + gap + h / 2;
+      c.style.top = y + 'px';
+      prevBottom = y + h / 2;
+    }
+    // 若最后一张溢出底部，整体上移
+    var overflow = prevBottom - side.clientHeight;
+    if (overflow > 0) {
+      for (var j = 0; j < cards.length; j++) {
+        var cy = parseFloat(cards[j].style.top) - overflow;
+        cards[j].style.top = Math.max(cards[j].offsetHeight / 2, cy) + 'px';
+      }
+    }
+  }
+
+  // 按 DOM 实际像素坐标画连线：viewBox = 真实尺寸，线宽不再被拉伸变形。
+  function draw(stage) {
+    var sr = stage.getBoundingClientRect();
+    if (!sr.width || !sr.height) return;
+    var svg = stage.querySelector('.wires');
+    svg.setAttribute('viewBox', '0 0 ' + f(sr.width) + ' ' + f(sr.height));
+    var out = '';
+    stage.querySelectorAll('.card').forEach(function (card) {
+      var key = card.dataset.key;
+      var anchor = stage.querySelector('.anchor[data-key="' + key + '"]');
+      if (!anchor) return;
+      var cr = card.getBoundingClientRect(), ar = anchor.getBoundingClientRect();
+      var isLeft = card.parentNode.classList.contains('left');
+      var sx = (isLeft ? cr.right : cr.left) - sr.left;
+      var sy = cr.top + cr.height / 2 - sr.top;
+      var ex = ar.left + ar.width / 2 - sr.left;
+      var ey = ar.top + ar.height / 2 - sr.top;
+      var dx = Math.max(18, Math.min(70, Math.abs(ex - sx) * .5));
+      var c1x = isLeft ? sx + dx : sx - dx;
+      var c2x = isLeft ? ex - dx : ex + dx;
+      var kind = card.dataset.kind === 'off' ? ' off' : '';
+      out += '<path class="wire' + kind + '" data-key="' + key + '" d="M' + f(sx) + ',' + f(sy) +
+             ' C' + f(c1x) + ',' + f(sy) + ' ' + f(c2x) + ',' + f(ey) +
+             ' ' + f(ex) + ',' + f(ey) + '"/>';
+      out += '<circle class="dot' + kind + '" data-key="' + key + '" cx="' + f(sx) +
+             '" cy="' + f(sy) + '" r="2.7"/>';
+    });
+    svg.innerHTML = out;
+
+    // hover 联动：卡片 ↔ 连线 ↔ 遥控器上的按键光圈
+    stage.querySelectorAll('.card').forEach(function (card) {
+      var key = card.dataset.key;
+      function set(on) {
+        stage.querySelectorAll('[data-key="' + key + '"]').forEach(function (el) {
+          el.classList.toggle('hot', on);
+          el.classList.toggle('show', on);
+        });
+      }
+      card.addEventListener('mouseenter', function () { set(true); });
+      card.addEventListener('mouseleave', function () { set(false); });
+    });
+  }
+
+  function refresh() {
+    document.querySelectorAll('section.on .stage').forEach(function (stage) {
+      stage.querySelectorAll('.side').forEach(layout);
+      draw(stage);
+    });
+  }
+
   function activate(id) {
     document.querySelectorAll('nav button').forEach(function (x) {
       x.classList.toggle('on', x.dataset.t === id);
@@ -259,12 +486,56 @@ TPL = """<!DOCTYPE html>
     document.querySelectorAll('section').forEach(function (x) {
       x.classList.toggle('on', x.id === id);
     });
+    requestAnimationFrame(refresh);
   }
   document.querySelectorAll('nav button').forEach(function (b) {
     b.addEventListener('click', function () { activate(b.dataset.t); });
   });
-  var m = location.hash.match(/^#(p[123])$/);
+
+  // 联系页：点「复制」写入剪贴板（兼容非安全上下文的 file:// 打开方式）
+  document.querySelectorAll('.ci-copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.dataset.copy;
+      function done() {
+        btn.textContent = '已复制'; btn.classList.add('ok');
+        setTimeout(function () { btn.textContent = '复制'; btn.classList.remove('ok'); }, 1600);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { fallback() });
+      } else { fallback(); }
+      function fallback() {
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    });
+  });
+
+  // 收款码点击放大
+  var lb = document.getElementById('lightbox');
+  var lbImg = document.getElementById('lightboxImg');
+  document.querySelectorAll('.zoomable').forEach(function (img) {
+    img.addEventListener('click', function () {
+      lbImg.src = img.src; lb.classList.add('on');
+    });
+  });
+  lb.addEventListener('click', function () { lb.classList.remove('on'); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') lb.classList.remove('on');
+  });
+
+  var m = location.hash.match(/^#(p[1-4])$/);
   if (m) activate(m[1]);
+
+  window.addEventListener('load', refresh);
+  var timer;
+  window.addEventListener('resize', function () {
+    clearTimeout(timer);
+    timer = setTimeout(refresh, 80);
+  });
+})();
 </script>
 </body>
 </html>
@@ -272,20 +543,18 @@ TPL = """<!DOCTYPE html>
 
 
 def main():
-    cards_dl, lines_dl = build_side(DIALOG_LEFT, "left", "#24A15A")
-    cards_dr, lines_dr = build_side(DIALOG_RIGHT, "right", "#24A15A")
-    cards_wl, lines_wl = build_side(WATCH_LEFT, "left", "#2563C7")
-    cards_wr, lines_wr = build_side(WATCH_RIGHT, "right", "#2563C7")
     html = (TPL
             .replace("{{ICON_DIALOG}}", data_uri(ICON_DIALOG, "image/png"))
             .replace("{{ICON_WATCH}}", data_uri(ICON_WATCH, "image/png"))
+            .replace("{{WHALE}}", data_uri(WHALE, "image/png"))
+            .replace("{{QR_WECHAT}}", data_uri(QR_WECHAT, "image/jpeg"))
+            .replace("{{QR_ALIPAY}}", data_uri(QR_ALIPAY, "image/jpeg"))
             .replace("{{REMOTE}}", data_uri(REMOTE, "image/jpeg"))
-            .replace("{{CARDS_DIALOG_LEFT}}", cards_dl)
-            .replace("{{CARDS_DIALOG_RIGHT}}", cards_dr)
-            .replace("{{LINES_DIALOG}}", lines_dl + "\n" + lines_dr)
-            .replace("{{CARDS_WATCH_LEFT}}", cards_wl)
-            .replace("{{CARDS_WATCH_RIGHT}}", cards_wr)
-            .replace("{{LINES_WATCH}}", lines_wl + "\n" + lines_wr))
+            .replace("{{CARDS_DIALOG_LEFT}}", build_cards(DIALOG_LEFT))
+            .replace("{{CARDS_DIALOG_RIGHT}}", build_cards(DIALOG_RIGHT))
+            .replace("{{CARDS_WATCH_LEFT}}", build_cards(WATCH_LEFT))
+            .replace("{{CARDS_WATCH_RIGHT}}", build_cards(WATCH_RIGHT))
+            .replace("{{ANCHORS}}", build_anchors()))
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(html)
     print("已生成 %s  (%.0f KB)" % (OUT, os.path.getsize(OUT) / 1024))

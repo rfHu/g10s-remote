@@ -42,6 +42,7 @@ MAGIC_EXTRA = 0x47475331      # "GGS1"：给我们自己 SendInput 出来的事�
 WM_INPUT = 0x00FF
 WM_APP_KEYMAP = 0x8001        # 钩子把「命中的按键」转发给消息循环处理
 WM_TRAYICON = 0x8002          # 托盘图标的回调消息
+WM_TIMER = 0x0113             # 定时器（用于区分托盘单击与双击）
 WM_COMMAND_ = 0x0111
 MENU_OPEN_LOG = 1001
 MENU_EXIT = 1002
