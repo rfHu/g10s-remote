@@ -761,10 +761,11 @@ def handle_mute_key():
         actual = get_mute()
     # 先把音量救回来，再刷托盘 —— 托盘刷新要几十毫秒，放在前面会拉长静音窗口
     if not CONSUMER_OWNED and before is not None:
-        # 无条件把状态设回按键前的值，不要只在「端点变了」时才做。
-        # 蓝牙音箱的静音是 AVRCP 在设备侧执行的，本机端点往往毫无变化
-        # （actual == before，于是被误判成「无需复位」），但 SetMute 会把
-        # 状态通过 AVRCP 同步给音箱，等效于补发一次 Unmute —— 实测有效。
+        # 蓝牙 AVRCP 是异步链路：驱动层发出的 Mute 要几十到几百毫秒才到音箱。
+        # 立刻 Unmute 会和它在设备侧抢先后（实测：端点复位成功、声音仍是静的）。
+        # 先等这条 Mute 落地，再发同步，设备侧才会最终停在「未静音」。
+        if actual is not None and actual != before:
+            time.sleep(0.35)
         ok = set_mute(before)
         if not ok:
             time.sleep(0.03)
