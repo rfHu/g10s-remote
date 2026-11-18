@@ -370,8 +370,9 @@ def preempt_stages(vk):
     consumed = False
     if VOICE.held:
         # 不排除修饰键：用户要求「说话时按任何键都算松手」，Ctrl/Shift/Alt 也算。
-        # 之所以敢放开，是因为我们注入的 Ctrl/Win 全部带 MAGIC_EXTRA，
-        # 钩子最上面那条判断会把它们原样放行，不会自我打断。
+        # 之所以敢放开，是因为注入的 Ctrl/Win 按下事件到达钩子时 held 仍是 False
+        # （mic 键在主线程处理，SendInput 会同步回调钩子，而 held 在两条都发完
+        # 之后才置 True），所以不会自我打断。
         try:
             VOICE.release_fast("被其他按键打断")
         except Exception as e:
@@ -493,13 +494,14 @@ class Voice:
             if self.held:
                 return False
             log("[voice] press 步骤1 发 Ctrl")
-            # 带 MAGIC_EXTRA：钩子认标记会放行，这样「修饰键也结束语音」
-            # 这条规则才安全 —— 否则我们自己注入的 Ctrl 一按下就会触发收尾，
-            # 语音刚开就被自己关掉。tap_chord（Ctrl+Alt+K）同款做法，已验证无害。
-            _send(VK_LCONTROL, extra=MAGIC_EXTRA)
+            # 这里刻意「不」带 MAGIC_EXTRA：微信输入法对注入事件是否按
+            # dwExtraInfo 过滤未知，带上标记有让它不认的风险，而省掉它是安全的——
+            # mic 键走 Raw Input、在主线程处理，SendInput 会同步回调钩子，
+            # 两条按下事件到达钩子时 held 仍是 False，所以不会自我打断。
+            _send(VK_LCONTROL)
             time.sleep(0.02)
             log("[voice] press 步骤2 发 Win")
-            _send(VK_LWIN, ext=True, extra=MAGIC_EXTRA)
+            _send(VK_LWIN, ext=True)
             self.held = True
             self.since = time.time()
             log("语音输入开始：已注入 Ctrl+Win 按下（再按一次结束）")
@@ -526,10 +528,10 @@ class Voice:
             self.held = False
             try:
                 log("[voice] release 步骤1 松 Win")
-                _send(VK_LWIN, up=True, ext=True, extra=MAGIC_EXTRA)
+                _send(VK_LWIN, up=True, ext=True)
                 time.sleep(0.02)
                 log("[voice] release 步骤2 松 Ctrl")
-                _send(VK_LCONTROL, up=True, extra=MAGIC_EXTRA)
+                _send(VK_LCONTROL, up=True)
             except Exception as e:
                 # held 已置 False，不能让修饰键就此卡住，必须硬松开
                 log("释放修饰键失败(%r)，强制松开" % (e,))
@@ -560,10 +562,10 @@ class Voice:
         self.held = False
         try:
             log("[voice] 打断释放 步骤1 松 Win")
-            _send(VK_LWIN, up=True, ext=True, extra=MAGIC_EXTRA)
+            _send(VK_LWIN, up=True, ext=True)
             time.sleep(0.02)
             log("[voice] 打断释放 步骤2 松 Ctrl")
-            _send(VK_LCONTROL, up=True, extra=MAGIC_EXTRA)
+            _send(VK_LCONTROL, up=True)
         except Exception:
             pass
         log("语音输入结束（%s）" % reason)
@@ -574,7 +576,7 @@ class Voice:
         self.held = False
         for key, ext in ((VK_LWIN, True), (VK_LCONTROL, False)):
             try:
-                _send(key, up=True, ext=ext, extra=MAGIC_EXTRA)
+                _send(key, up=True, ext=ext)
                 time.sleep(0.01)
             except Exception:
                 pass
@@ -1036,6 +1038,12 @@ def on_raw_input(lparam):
                 log("音量%s" % ("+" if usage == USAGE_VOL_UP else "-"))
     elif usage == USAGE_OK:
         # 只会在飞鼠关闭时出现；飞鼠开启时这个键直接变成鼠标左键，走不到这里
+        if VOICE.held:
+            # OK 键不产生任何键盘事件（系统直接丢弃），钩子那条通路看不到它，
+            # 所以「说话时按任何键都算松手」这条规则要在这里单独补一次。
+            # 与钩子里的收尾保持一致：只结束语音，OK 本身的动作不执行。
+            VOICE.release("被 OK 键打断")
+            return
         if CFG.ok_mode == "alt-tab":
             if ALT_TAB_ARMED:
                 alt_tab_commit("再次按下")
