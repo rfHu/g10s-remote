@@ -85,9 +85,25 @@ def read(p_vol):
             round(level.value * 100) if hr2 == 0 else None)
 
 
+def set_mute(p_vol, flag):
+    # IAudioEndpointVolume::SetMute(BOOL, GUID*) —— vtable 第 14 项
+    hr = vt_call(p_vol, 14, ctypes.c_long, (wintypes.BOOL, ctypes.c_void_p),
+                 wintypes.BOOL(flag), None)
+    return hr == 0
+
+
 def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
     watch = "--watch" in sys.argv
     p_vol = open_endpoint_volume()
+    if "--unmute" in sys.argv or "--mute" in sys.argv:
+        want = "--mute" in sys.argv
+        ok = set_mute(p_vol, want)
+        mute, level = read(p_vol)
+        print("设置%s → %s，当前：静音=%s 音量=%s%%"
+              % ("静音" if want else "取消静音", "成功" if ok else "失败",
+                 "是" if mute else "否", level))
+        return 0 if ok else 1
     if not watch:
         mute, level = read(p_vol)
         print("静音=%s  音量=%s%%" % ("是" if mute else "否", level))

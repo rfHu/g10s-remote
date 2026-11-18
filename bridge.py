@@ -19,6 +19,7 @@
 import argparse
 import ctypes
 import os
+import queue
 import re
 import sys
 import threading
@@ -315,7 +316,8 @@ def toggle_mode():
     txt = mode_text()
     log("已切换到：%s" % txt)
     refresh_tray()
-    notify("模式已切换", "现在是：%s" % txt)
+    # 原来这里还会弹托盘气泡，但 Windows 11 已废弃传统气泡（实测从不显示），
+    # 调用只是让 Shell_NotifyIcon 白跑一趟。模式指示统一交给图标变色 + 悬停文字。
     return txt
 
 
@@ -458,6 +460,129 @@ class Voice:
 
 
 VOICE = Voice()
+
+# ---------------- 音频端点（读/写静音状态） ----------------
+# 音量和静音的默认行为发生在 HID 驱动层，比键盘钩子更低一层：
+# 钩子能收到它顺手生成的 VK 0xAD，却拦不住音量本身。
+# 所以这里直接问音频端点，用来判断「这一次按键到底有没有真的静音」，
+# 需要时用 API 直接复位 —— 不走按键事件，因此没有音量 OSD、也没有断音。
+ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+ole32.CLSIDFromString.argtypes = (wintypes.LPCWSTR, ctypes.c_void_p)
+ole32.CoCreateInstance.argtypes = (ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD,
+                                   ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+ole32.CoInitializeEx.argtypes = (ctypes.c_void_p, wintypes.DWORD)
+COINIT_MULTITHREADED = 0x0
+
+
+class _CA_GUID(ctypes.Structure):
+    _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD), ("Data4", ctypes.c_byte * 8)]
+
+
+def _ca_guid(text):
+    g = _CA_GUID()
+    ole32.CLSIDFromString(text, ctypes.byref(g))
+    return g
+
+
+def _vt_call(obj, index, restype, argtypes, *args):
+    """按 vtable 序号调用 COM 方法（QueryInterface 记为 0）。"""
+    vtbl = ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
+    fn = ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vtbl[index])
+    return fn(obj, *args)
+
+
+_TLS = threading.local()      # 每个线程一个音频端点，见 audio_endpoint 的说明
+EXPECTED_MUTE = None          # 我们认为系统当前应有的静音状态
+
+
+def audio_endpoint():
+    """按线程各建一个音频端点。
+
+    绝不能跨线程共用一个：IAudioEndpointVolume 是 STA 对象，主线程建好后
+    交给后台线程调用会返回 RPC_E_WRONG_THREAD（0x8001010E），表现为
+    「SetMute 偶发失败、音量没复位」。所以用 threading.local 各存一份。
+    失败只试一次，避免每次按键都白跑一趟 COM。
+    """
+    p = getattr(_TLS, "vol", None)
+    if p is not None:
+        return p
+    if getattr(_TLS, "failed", False):
+        return None
+    try:
+        # 必须用 MTA：后台工作线程没有消息泵，STA 的跨公寓调用会间歇性失败
+        # （RPC_E_WRONG_THREAD / 超时），表现就是「SetMute 有时成功有时失败」。
+        ole32.CoInitializeEx(None, COINIT_MULTITHREADED)
+        clsid = _ca_guid("{BCDE0395-E52F-467C-8E3D-C4579291692E}")   # MMDeviceEnumerator
+        iid_enum = _ca_guid("{A95664D2-9614-4F35-A746-DE8DB63617E6}")
+        iid_vol = _ca_guid("{5CDF2C82-841E-4546-9722-0CF74078229A}")
+        CLSCTX_ALL = 23
+        p_enum = ctypes.c_void_p()
+        hr = ole32.CoCreateInstance(ctypes.byref(clsid), None, CLSCTX_ALL,
+                                    ctypes.byref(iid_enum), ctypes.byref(p_enum))
+        if hr != 0:
+            raise OSError("CoCreateInstance hr=0x%08X" % (hr & 0xFFFFFFFF))
+        p_dev = ctypes.c_void_p()
+        hr = _vt_call(p_enum, 4, ctypes.c_long,        # GetDefaultAudioEndpoint(render, console)
+                      (ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)),
+                      0, 0, ctypes.byref(p_dev))
+        if hr != 0:
+            raise OSError("GetDefaultAudioEndpoint hr=0x%08X" % (hr & 0xFFFFFFFF))
+        p_vol = ctypes.c_void_p()
+        hr = _vt_call(p_dev, 3, ctypes.c_long,         # IMMDevice::Activate
+                      (ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+                       ctypes.POINTER(ctypes.c_void_p)),
+                      ctypes.byref(iid_vol), CLSCTX_ALL, None, ctypes.byref(p_vol))
+        if hr != 0:
+            raise OSError("Activate hr=0x%08X" % (hr & 0xFFFFFFFF))
+        for obj in (p_dev, p_enum):
+            _vt_call(obj, 2, ctypes.c_ulong, ())       # Release
+        _TLS.vol = p_vol
+        log("音频端点已就绪（%s 线程）" % threading.current_thread().name)
+    except Exception as e:
+        _TLS.failed = True
+        log("音频端点不可用（静音键不做恢复）：%r" % (e,))
+    return getattr(_TLS, "vol", None)
+
+
+def get_mute():
+    p = audio_endpoint()
+    if not p:
+        return None
+    m = wintypes.BOOL()
+    hr = _vt_call(p, 15, ctypes.c_long, (ctypes.POINTER(wintypes.BOOL),), ctypes.byref(m))
+    return bool(m.value) if hr == 0 else None
+
+
+def set_mute(flag):
+    p = audio_endpoint()
+    if not p:
+        return False
+    hr = _vt_call(p, 14, ctypes.c_long, (wintypes.BOOL,), wintypes.BOOL(flag))
+    if hr != 0:
+        log("[audio] SetMute(%s) 失败 hr=0x%08X" % (flag, hr & 0xFFFFFFFF))
+    return hr == 0
+
+
+def refresh_expected_mute():
+    """记录「按键前应有的静音状态」，只在启动时调用一次。
+
+    运行期间**不做**轮询：任何在主线程上跑的阻塞调用（COM 尤其）都会让
+    低级钩子的回调排队，超过系统阈值后这一次事件被跳过，VK 0xAD 直接漏给
+    系统 —— 表现就是静音键偶尔真的静音并弹 OSD。
+
+    代价是：用户运行期间用物理键盘/系统面板改过静音，这个基线会过期，
+    下次按遥控器静音键时会恢复到过期的值（一次性偏差）。比起漏键让音量
+    真的变化，这个代价可以接受。
+    """
+    global EXPECTED_MUTE
+    if not audio_endpoint():
+        return
+    m = get_mute()
+    if m is not None:
+        EXPECTED_MUTE = m
+
+
 CFG = None
 HWND = None
 TRAY_HWND = None
@@ -512,6 +637,63 @@ def parse_consumer(data):
     return 0
 
 
+# ---------------- 后台任务队列 ----------------
+# 静音键的处理（COM 读音量 + 托盘刷新 + 气泡）不能留在主线程：
+# 低级键盘钩子的回调跑在主线程上，主线程一忙，钩子回调就开始排队，
+# 超过系统阈值（默认 300ms）后 Windows 会跳过这一次钩子，VK 0xAD 直接漏给
+# 系统 —— 表现就是「静音键偶尔真的静音并弹 OSD」。实测连续快速按两下时，
+# 第二次必漏。所以主线程只往队列里丢一个任务就返回。
+_WORK_Q = queue.Queue()
+
+
+def handle_mute_key():
+    """静音键的全部逻辑，跑在后台线程，绝不占用主线程。"""
+    if CFG.silent_key != "mode":
+        if CONSUMER_OWNED:
+            tap_key(VK_MUTE, extra=MAGIC_EXTRA)
+        log("静音键 → 原生静音")
+        return
+    if CFG.keep_mute_native:
+        # 不拦 VK 0xAD：驱动层 toggle 一次（静音）、shell 处理键盘消息再 toggle 一次
+        # （取消静音），两次互相抵消，音量不动。这里绝不能再去碰音量，
+        # 否则就变成第三次 toggle，反而把静音打开。
+        txt = toggle_mode()
+        log("静音键 → 切换上/下键模式：现在%s（音量由系统两次 toggle 抵消）" % txt)
+        return
+    before = EXPECTED_MUTE          # 按键前应有的状态
+    actual = get_mute()             # 现在（可能已被驱动层改过）
+    txt = toggle_mode()
+    if not CONSUMER_OWNED and before is not None and actual is not None:
+        if actual != before:
+            # 驱动层改了 —— 说明这一次钩子没拦住（主线程刚好在忙）。
+            # 用 API 直接设回原件，不经过按键事件。
+            ok = set_mute(before)
+            if not ok:
+                # 音频服务偶尔会对紧接着的调用返回失败，等一下再试一次
+                time.sleep(0.02)
+                ok = set_mute(before)
+            if ok:
+                log("静音键：驱动层改动了静音（%s→%s），已用 API 静默复位"
+                    % (actual, before))
+            else:
+                log("静音键：驱动层改动了静音，API 复位失败（音量已变）")
+        else:
+            log("静音键：驱动层未改动静音（钩子已拦住）")
+    log("静音键 → 切换上/下键模式：现在%s" % txt)
+
+
+def work_loop():
+    while True:
+        item = _WORK_Q.get()
+        if item is None:
+            return
+        try:
+            if item[0] == "mute":
+                handle_mute_key()
+        except Exception as e:
+            log("后台任务出错: %r" % (e,))
+
+
 def on_raw_input(lparam):
     global _last_vol_log
     size = wintypes.UINT(SIZEOF_RAWINPUTHEADER)
@@ -563,22 +745,9 @@ def on_raw_input(lparam):
         if CFG.voice_mode == "hold":
             VOICE.release()
     elif usage == USAGE_MUTE:
-        # 静音键的动作始终在消费者页这一侧做，这条通路不受键盘钩子死活影响。
-        if CFG.silent_key == "mode":
-            txt = toggle_mode()
-            if not CONSUMER_OWNED:
-                # 静音/音量由 HID 驱动层直接执行，比键盘钩子更低，钩子只能拦到它
-                # 顺手生成的 VK 0xAD，拦不住音量本身（2026-11-18 实测确认）。
-                # 既然拦不住，就在它生效之后翻回去：mute 是 toggle，连发两次等于没动。
-                # 带 MAGIC_EXTRA 注入，钩子认标记会放行，不会被自己吃掉。
-                tap_key(VK_MUTE, extra=MAGIC_EXTRA)
-            log("静音键 → 切换上/下键模式：现在%s" % txt)
-        else:
-            if CONSUMER_OWNED:
-                # 独占模式下系统不再自己静音，必须把 VK_MUTE 转发出去
-                tap_key(VK_MUTE, extra=MAGIC_EXTRA)
-            # 未独占时驱动层已经静音过了，这里什么都不用做，否则会静音两次
-            log("静音键 → 原生静音")
+        # 只投递任务、立刻返回。这里跑在主线程上，任何耗时操作（COM、托盘、
+        # 气泡）都会牵连正在排队的钩子回调，进而让下一次 VK 0xAD 漏给系统。
+        _WORK_Q.put(("mute",))
     elif usage == USAGE_BACK:
         if not CONSUMER_OWNED or CFG.back == "off":
             if CFG.debug:
@@ -683,6 +852,9 @@ def low_level_proc(n_code, w_param, l_param):
             return 1
         # 只吃掉原键、动作走另一条通道（静音键的切换由消费者页 0x00E2 触发）
         if kb.vkCode in INTERCEPT_ONLY:
+            if CFG.debug_keys and w_param in (0x0100, 0x0104):
+                # 钩子回调里写日志本身就是阻塞源，只在显式诊断时开
+                log("钩子拦截 0x%02X（dwExtraInfo=0x%X）" % (kb.vkCode, kb.dwExtraInfo))
             return 1
         act = KEY_ACTIONS.get(kb.vkCode)
         if act is not None:
@@ -849,6 +1021,9 @@ def make_tray_window():
     return hwnd
 
 
+_TRAY_ICONS = {}      # 文件名 -> HICON，避免每次切模式都从磁盘读图标
+
+
 def tray_icon_handle(icon_name=None):
     """按当前模式选图标：方向键=蓝（app.ico），滚轮=橙（app-wheel.ico）。
 
@@ -856,6 +1031,9 @@ def tray_icon_handle(icon_name=None):
     """
     if icon_name is None:
         icon_name = "app-watch.ico" if KEY_MODE == "watch" else "app-edit.ico"
+    if icon_name in _TRAY_ICONS:
+        return _TRAY_ICONS[icon_name]
+    h = None
     bases = []
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
@@ -866,8 +1044,11 @@ def tray_icon_handle(icon_name=None):
         if os.path.exists(path):
             h = u32.LoadImageW(None, path, IMAGE_ICON, 32, 32, LR_LOADFROMFILE)
             if h:
-                return h
-    return u32.LoadIconW(None, ctypes.c_void_p(32512))     # IDI_APPLICATION
+                break
+    if not h:
+        h = u32.LoadIconW(None, ctypes.c_void_p(32512))   # IDI_APPLICATION
+    _TRAY_ICONS[icon_name] = h
+    return h
 
 
 def add_tray(hwnd):
@@ -1146,6 +1327,9 @@ def main():
     ap.add_argument("--own", action="store_true",
                     help="尝试独占消费者页（RIDEV_NOLEGACY）。实测这台复合设备会被系统拒绝"
                          "（err=1004），保留开关便于换设备时验证")
+    ap.add_argument("--keep-mute-native", dest="keep_mute_native", action="store_true",
+                    help="不拦截 VK 0xAD：驱动层静音一次、键盘默认处理再 toggle 一次，"
+                         "两者互相抵消，音量不变（推荐）")
     CFG = ap.parse_args()
 
     _logf = open(LOG_PATH, "a", encoding="utf-8")
@@ -1164,7 +1348,7 @@ def main():
         # 编辑模式下替换原生后退；观看模式由钩子直接放行，走不到这里
         back_mode = "replace" if CFG.back == "esc" else "additive"
         KEY_ACTIONS[VK_BROWSER_BACK] = ("key", VK_ESCAPE, back_mode, "返回键 → Esc")
-    if CFG.silent_key == "mode":
+    if CFG.silent_key == "mode" and not CFG.keep_mute_native:
         # 动作改由消费者页 0x00E2 触发（见 on_raw_input），钩子这边只负责吃掉原生 0xAD
         INTERCEPT_ONLY.add(VK_MUTE)
     if CFG.menu_key == "right":
@@ -1212,6 +1396,13 @@ def main():
         except Exception as e:
             log("托盘图标创建失败（不影响按键功能）：%r" % (e,))
 
+    # 建立静音状态基线：否则第一次按静音键时，没法和「按键前」比对
+    audio_endpoint()
+    refresh_expected_mute()
+
+    # 静音键的处理放到后台线程：主线程必须随时能立刻响应钩子回调
+    threading.Thread(target=work_loop, name="mute-worker", daemon=True).start()
+
     hook = None
     if KEY_ACTIONS or INTERCEPT_ONLY:
         hook = install_hook()
@@ -1248,11 +1439,16 @@ def main():
                     u32.DispatchMessageW(ctypes.byref(msg))
                 VOICE.watchdog()
                 alt_tab_watchdog()
+                # 注意：这里绝不能放任何可能阻塞的调用（COM、IO、等待）。
+                # 低级键盘钩子的回调跑在本线程上，主线程一阻塞，钩子回调就排队，
+                # 超过系统阈值（默认 300ms）后这一次事件会被跳过，VK 0xAD 直接漏给
+                # 系统 —— 表现就是「静音键偶尔真的静音并弹 OSD」。
                 time.sleep(0.004)
         except KeyboardInterrupt:
             log("收到退出信号")
 
     # 收尾：一定要释放修饰键，否则 Win 会卡在按下状态
+    _WORK_Q.put(None)
     alt_tab_commit("退出")
     VOICE.release("退出")
     remove_tray()
