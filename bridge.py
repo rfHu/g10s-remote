@@ -91,7 +91,7 @@ VK_T = 0x54
 MOUSEEVENTF_WHEEL = 0x0800
 WHEEL_DELTA = 120
 WHEEL_MIN_INTERVAL = 0.09     # 滚轮最小间隔，防止按住时滚得飞快
-KEY_MODE = "edit"             # "edit"=编辑模式（上/下=方向键）；"watch"=观看模式（上/下=滚轮）
+KEY_MODE = "edit"             # "edit"=对话模式（上/下=方向键）；"watch"=观看模式（上/下=滚轮）
 VK_RETURN = 0x0D
 VK_ESCAPE = 0x1B
 
@@ -318,7 +318,7 @@ def notify(title, text):
 
 
 def mode_text():
-    return "编辑模式" if KEY_MODE == "edit" else "观看模式"
+    return "对话模式" if KEY_MODE == "edit" else "观看模式"
 
 
 def tray_text():
@@ -1262,7 +1262,7 @@ def tray_icon_handle(icon_name=None):
     找不到文件就退回系统默认图标，不影响功能。
     """
     if icon_name is None:
-        icon_name = "app-watch.ico" if KEY_MODE == "watch" else "app-edit.ico"
+        icon_name = "app-watch.ico" if KEY_MODE == "watch" else "app-dialog.ico"
     if icon_name in _TRAY_ICONS:
         return _TRAY_ICONS[icon_name]
     h = None
@@ -1451,7 +1451,7 @@ def show_tray_menu(hwnd):
         if sub:
             edit_flags = MF_STRING | (MF_CHECKED if KEY_MODE == "edit" else 0)
             watch_flags = MF_STRING | (MF_CHECKED if KEY_MODE == "watch" else 0)
-            u32.AppendMenuW(sub, edit_flags, MENU_MODE_EDIT, "编辑模式")
+            u32.AppendMenuW(sub, edit_flags, MENU_MODE_EDIT, "对话模式")
             u32.AppendMenuW(sub, watch_flags, MENU_MODE_WATCH, "观看模式")
             # CreatePopupMenu 的 restype 是 c_void_p，ctypes 返回的是普通整数
             # （不是 c_void_p 实例），所以这里直接传，不能写 sub.value
@@ -1583,7 +1583,7 @@ def main():
     edit = KEY_ACTIONS_BY_MODE["edit"]
     watch = KEY_ACTIONS_BY_MODE["watch"]
 
-    # 编辑模式：写作 / 编码。灯泡键最好按，留给最高频的回车
+    # 对话模式：写作 / 编码。灯泡键最好按，留给最高频的回车
     edit[VK_APPS] = ("key", VK_RETURN, "灯泡键 → 回车")
     edit[VK_MEDIA_PLAY_PAUSE] = ("chord", ((VK_CONTROL, VK_MENU), VK_K),
                                  "播放键 → Ctrl+Alt+K（全局搜索）")
@@ -1647,7 +1647,7 @@ def main():
     hook = None
     if any(KEY_ACTIONS_BY_MODE.values()) or INTERCEPT_ONLY:
         hook = install_hook()
-        for m, label in (("edit", "编辑"), ("watch", "观看")):
+        for m, label in (("edit", "对话"), ("watch", "观看")):
             for src, (kind, target, text) in KEY_ACTIONS_BY_MODE[m].items():
                 log("已映射[%s] 0x%02X → %s" % (label, src, text))
         for src in sorted(INTERCEPT_ONLY):

@@ -12,16 +12,16 @@ import zlib
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_ICO = os.path.join(ROOT, "app.ico")
 OUT_WHEEL_ICO = os.path.join(ROOT, "app-wheel.ico")
-OUT_EDIT_ICO = os.path.join(ROOT, "app-edit.ico")
+OUT_DIALOG_ICO = os.path.join(ROOT, "app-dialog.ico")
 OUT_WATCH_ICO = os.path.join(ROOT, "app-watch.ico")
 OUT_PNG = os.path.join(ROOT, "app-preview.png")
 SIZES = [16, 32, 48, 64, 256]
 SS = 4                      # 超采样倍数
 
-BG = (0x2F, 0x6F, 0xEB)     # 蓝底 —— 语音/默认
-BG_WHEEL = (0xE0, 0x7A, 0x1E)  # 橙底 —— 旧滚轮图标
-BG_EDIT = (0xB8, 0x86, 0x0B)   # 深黄底 —— 编辑模式
-BG_WATCH = (0x24, 0xA1, 0x5A)  # 绿底 —— 观看模式
+BG = (0x2F, 0x6F, 0xEB)         # 蓝底 —— 程序图标（麦克风）
+BG_WHEEL = (0xE0, 0x7A, 0x1E)   # 橙底 —— 旧滚轮图标
+BG_DIALOG = (0x24, 0xA1, 0x5A)  # 绿底 —— 对话模式
+BG_WATCH = (0x25, 0x63, 0xC7)   # 蓝底 —— 观看模式（比程序图标略深，便于区分）
 FG = (0xFF, 0xFF, 0xFF)     # 白色前景
 
 
@@ -92,6 +92,22 @@ def four_way_alpha(x, y):
     if 0.16 <= x <= 0.34 and abs(y - 0.50) <= 0.106 * (x - 0.16) / 0.18:
         return True
     if 0.66 <= x <= 0.84 and abs(y - 0.50) <= 0.106 * (0.84 - x) / 0.18:
+        return True
+    return False
+
+
+def bubbles_alpha(x, y):
+    """两个叠放的对话气泡，用于「对话模式」图标。
+
+    小气泡外加了一圈「间隙」（gap），把大气泡在同一区域挖掉 —— 否则两个
+    气泡都是纯白，叠在一起会糊成一块，没有层次。
+    """
+    big = in_round_rect(x, y, 0.13, 0.15, 0.65, 0.57, 0.09)
+    gap = in_round_rect(x, y, 0.40, 0.42, 0.92, 0.86, 0.11)
+    small = in_round_rect(x, y, 0.45, 0.47, 0.87, 0.81, 0.08)
+    if small:
+        return True
+    if big and not gap:
         return True
     return False
 
@@ -199,9 +215,9 @@ def build(path, bg, glyph, preview=None):
 def main():
     print("程序图标（麦克风，蓝）—— 仅用作 exe 图标")
     build(OUT_ICO, BG, mic_alpha, OUT_PNG)
-    print("编辑模式图标（四向箭头，深黄）")
-    build(OUT_EDIT_ICO, BG_EDIT, four_way_alpha, OUT_PNG.replace("preview", "preview-edit"))
-    print("观看模式图标（眼睛，绿）")
+    print("对话模式图标（两个气泡，绿）")
+    build(OUT_DIALOG_ICO, BG_DIALOG, bubbles_alpha, OUT_PNG.replace("preview", "preview-dialog"))
+    print("观看模式图标（眼睛，蓝）")
     build(OUT_WATCH_ICO, BG_WATCH, eye_alpha, OUT_PNG.replace("preview", "preview-watch"))
     print("旧滚轮图标（上下箭头，橙）—— 已不用，保留生成")
     build(OUT_WHEEL_ICO, BG_WHEEL, arrows_alpha, OUT_PNG.replace("preview", "preview-wheel"))

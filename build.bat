@@ -48,7 +48,7 @@ timeout /t 1 >nul
 %PY% -m PyInstaller --noconfirm --onefile --noconsole --name "G10S-Remote" ^
   --icon "%~dp0app.ico" ^
   --add-data "%~dp0app.ico;." ^
-  --add-data "%~dp0app-edit.ico;." ^
+  --add-data "%~dp0app-dialog.ico;." ^
   --add-data "%~dp0app-watch.ico;." ^
   --distpath "%~dp0dist" --workpath "%~dp0build" "%~dp0bridge.py"
 if errorlevel 1 (
