@@ -760,15 +760,24 @@ def handle_mute_key():
         time.sleep(0.03)
         actual = get_mute()
     # 先把音量救回来，再刷托盘 —— 托盘刷新要几十毫秒，放在前面会拉长静音窗口
-    if not CONSUMER_OWNED and before is not None and actual is not None and actual != before:
+    if not CONSUMER_OWNED and before is not None:
+        # 无条件把状态设回按键前的值，不要只在「端点变了」时才做。
+        # 蓝牙音箱的静音是 AVRCP 在设备侧执行的，本机端点往往毫无变化
+        # （actual == before，于是被误判成「无需复位」），但 SetMute 会把
+        # 状态通过 AVRCP 同步给音箱，等效于补发一次 Unmute —— 实测有效。
         ok = set_mute(before)
         if not ok:
-            time.sleep(0.02)
+            time.sleep(0.03)
             ok = set_mute(before)      # 音频服务偶尔拒绝紧接着的第二次调用
-        if ok:
-            log("静音键：音量被驱动层改成 %s，已复位为 %s" % (actual, before))
+        if actual is not None and actual != before:
+            if ok:
+                log("静音键：音量被驱动层改成 %s，已复位为 %s" % (actual, before))
+            else:
+                log("静音键：音量被驱动层改成 %s，复位失败" % actual)
+        elif ok:
+            log("静音键：端点状态未变，已主动同步 %s（蓝牙设备需要这一步）" % before)
         else:
-            log("静音键：音量被驱动层改成 %s，复位失败" % actual)
+            log("静音键：同步静音状态失败（蓝牙设备可能仍静音）")
     txt = toggle_mode()
     log("静音键 → 切换上/下键模式：现在%s" % txt)
 
