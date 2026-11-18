@@ -1,0 +1,18 @@
+# ---------- 打包产物 ----------
+# exe 可由 build.bat 重新生成，不进版本库（每次打包 8MB+，且二进制无法 diff）
+build/
+dist/
+*.spec
+
+# ---------- 调试素材 ----------
+# 本机实验时截的原始帧缓冲（a_arrows/b1/b2/balloon/ctx/switch/t0 等），20MB+
+*.bmp
+app-preview*.png
+
+# ---------- 运行日志 ----------
+# bridge.log 每次启动都追加，且包含用户按键流水，不适合入库
+*.log
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
