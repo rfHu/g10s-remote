@@ -374,6 +374,10 @@ def preempt_stages(vk):
         # （mic 键在主线程处理，SendInput 会同步回调钩子，而 held 在两条都发完
         # 之后才置 True），所以不会自我打断。
         try:
+            # 静音键的动作走 Raw Input 那条吞不到的通道，先留标记让那边跳过
+            # 「切换模式」—— 否则语音中按它会顺带切模式。
+            if vk == VK_MUTE:
+                note_mute_used_for_voice()
             VOICE.release_fast("被其他按键打断")
         except Exception as e:
             # 兜底：无论如何必须把 Ctrl/Win 松开，否则整个键盘都会变成快捷键
@@ -588,6 +592,29 @@ class Voice:
 
 
 VOICE = Voice()
+
+# ---------------- 「静音键只用来结束语音」的一次性抑制 ----------------
+# 静音键有两条通道：钩子收到 VK 0xAD（能吞掉），Raw Input 收到消费者页
+# 0x00E2（吞不到，会照常切模式）。于是语音中按它会「结束语音 + 顺手切模式」，
+# 与返回键/播放键的「只结束语音」不一致。
+# 这里留一个一次性标记：钩子判定这次静音键是拿来收尾的，就把它记下来，
+# Raw Input 那边看到标记便跳过切模式。带 0.3 秒时效，避免标记残留后
+# 误吞掉下一次真正的切模式。
+_MUTE_SUPPRESS_AT = 0.0
+MUTE_SUPPRESS_TTL = 0.3
+
+
+def note_mute_used_for_voice():
+    global _MUTE_SUPPRESS_AT
+    _MUTE_SUPPRESS_AT = time.time()
+
+
+def take_mute_suppression():
+    """取用一次「本次静音键别切模式」的标记；取用即失效。"""
+    global _MUTE_SUPPRESS_AT
+    hit = _MUTE_SUPPRESS_AT and (time.time() - _MUTE_SUPPRESS_AT) < MUTE_SUPPRESS_TTL
+    _MUTE_SUPPRESS_AT = 0.0
+    return bool(hit)
 
 # ---------------- 音频端点（读/写静音状态） ----------------
 # 音量和静音的默认行为发生在 HID 驱动层，比键盘钩子更低一层：
@@ -883,8 +910,12 @@ def parse_consumer(data):
 _WORK_Q = queue.Queue()
 
 
-def handle_mute_key():
-    """静音键的全部逻辑，跑在后台线程，绝不占用主线程。"""
+def handle_mute_key(allow_toggle=True):
+    """静音键的全部逻辑，跑在后台线程，绝不占用主线程。
+
+    allow_toggle=False 用于「这次静音键只是用来结束语音」的情形：
+    不切换模式，但音量复位照做 —— 驱动层那一下真静音已经发生了。
+    """
     if CFG.silent_key != "mode":
         if CONSUMER_OWNED:
             tap_key(VK_MUTE, extra=MAGIC_EXTRA)
@@ -896,7 +927,7 @@ def handle_mute_key():
         # 但系统偶尔忙，第二次没跟上就只剩一次 toggle、音量真的静音 —— 所以
         # 等两次都落地之后再兜底检查一遍，仍然是静音就补回来。
         before = EXPECTED_MUTE
-        txt = toggle_mode()
+        txt = toggle_mode() if allow_toggle else mode_text()
         log("静音键 → 切换上/下键模式：现在%s" % txt)
         time.sleep(0.15)                 # 等两次 toggle 都落地（间隔约 40ms）
         m = get_mute()
@@ -941,8 +972,11 @@ def handle_mute_key():
             log("静音键：端点状态未变，已主动同步 %s（蓝牙设备需要这一步）" % before)
         else:
             log("静音键：同步静音状态失败（蓝牙设备可能仍静音）")
-    txt = toggle_mode()
-    log("静音键 → 切换上/下键模式：现在%s" % txt)
+    if allow_toggle:
+        txt = toggle_mode()
+        log("静音键 → 切换上/下键模式：现在%s" % txt)
+    else:
+        log("静音键：本次只结束语音，模式保持%s" % mode_text())
 
 
 def work_loop():
@@ -961,7 +995,7 @@ def work_loop():
             return
         try:
             if item[0] == "mute":
-                handle_mute_key()
+                handle_mute_key(item[1] if len(item) > 1 else True)
         except Exception as e:
             log("后台任务出错: %r" % (e,))
 
@@ -1017,9 +1051,22 @@ def on_raw_input(lparam):
         if CFG.voice_mode == "hold":
             VOICE.release()
     elif usage == USAGE_MUTE:
+        # 语音进行中：这个键只用来结束语音，不切换模式。
+        # 两条通道谁先到不确定，两边都覆盖：
+        #   · 报文先到（held 仍是 True）→ 这里直接结束语音
+        #   · 钩子先到 → 它已经结束语音并留了抑制标记，这里取用
+        # 但「复位音量」必须照做：驱动层那一下真静音已经发生了，
+        # 跳过整个处理会让音量卡在静音状态。
+        allow_toggle = True
+        if VOICE.held:
+            VOICE.release("被静音键打断")
+            allow_toggle = False
+        elif take_mute_suppression():
+            log("静音键：本次只用于结束语音，不切换模式")
+            allow_toggle = False
         # 只投递任务、立刻返回。这里跑在主线程上，任何耗时操作（COM、托盘、
         # 气泡）都会牵连正在排队的钩子回调，进而让下一次 VK 0xAD 漏给系统。
-        _WORK_Q.put(("mute",))
+        _WORK_Q.put(("mute", allow_toggle))
     elif usage == USAGE_BACK:
         # 返回键的动作由键盘钩子（VK 0xA6）负责，这条只作调试记录
         if CFG.debug:
