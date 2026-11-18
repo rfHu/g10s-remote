@@ -146,6 +146,14 @@
   }
   .ci-copy:hover { border-color:#3b6fd4; color:#3b6fd4; }
   .ci-copy.ok { border-color:#24A15A; color:#24A15A; }
+  .ci-link {
+    margin-left:auto; flex:none; border:1px solid var(--line); background:#fff;
+    color:var(--muted); border-radius:8px; padding:5px 12px; font:inherit;
+    font-size:12px; text-decoration:none; transition:.15s;
+  }
+  .ci-link:hover { border-color:#3b6fd4; color:#3b6fd4; }
+  .ci-value a { color:inherit; text-decoration:none; border-bottom:1px dashed #b6bdc6; }
+  .ci-value a:hover { color:#3b6fd4; border-bottom-color:#3b6fd4; }
 
   .reward { text-align:center;
     margin-top:26px; background:#fff; border:1px solid var(--line);
@@ -322,6 +330,11 @@
           <span class="ci-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-4-.9L3 20l1-4.5A8.4 8.4 0 0 1 3 11.5 8.5 8.5 0 0 1 12 3a8.5 8.5 0 0 1 9 8.5z"/></svg></span>
           <div class="ci-body"><div class="ci-label">微信</div><div class="ci-value">ray2449663340</div></div>
           <button class="ci-copy" data-copy="ray2449663340">复制</button>
+        </div>
+        <div class="contact-item">
+          <span class="ci-icon"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-1.05-.01-1.9-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.4 9.4 0 0 1 12 6.99c.85 0 1.71.12 2.51.34 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.8-4.57 5.05.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.59.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg></span>
+          <div class="ci-body"><div class="ci-label">GitHub（开源地址）</div><div class="ci-value"><a href="https://github.com/rfHu/g10s-remote" target="_blank" rel="noopener">github.com/rfHu/g10s-remote</a></div></div>
+          <a class="ci-link" href="https://github.com/rfHu/g10s-remote" target="_blank" rel="noopener">访问 ↗</a>
         </div>
       </div>
 
