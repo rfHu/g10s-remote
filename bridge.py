@@ -1,19 +1,21 @@
-"""G10S Pro 遥控器桥接：播放键 → 回车，麦克风键 → Ctrl+Win。
+"""G10S Pro 遥控器桥接：把遥控器改造成「对话模式 / 观看模式」两用输入设备。
 
-两个诉求的技术路径不同：
-  · 播放/暂停：设备发消费者页 0x00CD，Windows 把它翻译成 VK 0xB3 再送进键盘事件流。
-    要「不做播放、只发回车」，必须用低级键盘钩子把 0xB3 吃掉（Raw Input 只能看不能拦）。
-  · 麦克风：设备发消费者页 0x00CF，Windows 直接丢弃，不产生任何键。
-    只能靠 Raw Input 读到原始报文，再注入 Ctrl+Win（按住多久就保持多久）。
+两类按键走的技术路径不同：
+  · 系统会翻译的键（播放 0xB3、返回 0xA6、灯泡 0x5D、PageUp/Down）：
+    用低级键盘钩子吃掉原键，改发我们想要的键或组合键。
+  · 系统会丢弃的键（麦克风 0xCF、OK 0x41）：只能靠 Raw Input 读原始报文再注入。
 
-只读 Raw Input 的 Consumer Control（0x0C/0x01），不碰键盘页和鼠标页。
+静音键（0xAD）是特例：真正的静音发生在 HID 驱动层，比键盘钩子更低，拦不住；
+只能在它生效后用 Core Audio 把状态设回去（蓝牙设备还要等一个 AVRCP 往返）。
+
+Raw Input 只注册 Consumer Control（0x0C/0x01），不碰键盘页和鼠标页。
 
 用法：
-    python bridge.py                  # 正常跑
-    python bridge.py --dry-run        # 只注册、只挂钩子，不注入任何按键
-    python bridge.py --play additive  # 播放键改成叠加（保留原媒体功能）
-    python bridge.py --no-play        # 关掉播放键映射
-    python bridge.py --no-voice       # 关掉语音映射
+    python bridge.py                    # 正常跑
+    python bridge.py --dry-run          # 只注册、只挂钩子，不注入任何按键
+    python bridge.py --debug            # 打印每一条消费者页报文
+    python bridge.py --silent-key mute  # 静音键恢复原生静音（不切模式）
+    python bridge.py --no-voice         # 关掉语音映射
 """
 
 import argparse
@@ -60,11 +62,10 @@ _PENDING_CLICK = False
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "G10S-Remote"
 NIM_ADD, NIM_MODIFY, NIM_DELETE = 0, 1, 2
-NIF_MESSAGE, NIF_ICON, NIF_TIP, NIF_INFO = 0x01, 0x02, 0x04, 0x10
+NIF_MESSAGE, NIF_ICON, NIF_TIP = 0x01, 0x02, 0x04
 RID_INPUT = 0x10000003
 RIDI_DEVICENAME = 0x20000007
 WH_KEYBOARD_LL = 13
-RIM_TYPEKEYBOARD = 1
 RIM_TYPEHID = 2
 
 INPUT_KEYBOARD = 1
@@ -77,9 +78,7 @@ VK_MEDIA_PLAY_PAUSE = 0xB3
 VK_BROWSER_BACK = 0xA6        # 遥控器「返回」键被 Windows 翻译成的 VK
 VK_APPS = 0x5D                # 遥控器「菜单/灯泡」键（Applications 键）
 VK_CONTROL = 0x11
-VK_MENU = 0x12                 # 通用 Alt（组合键用；Alt+Tab 那套用 VK_LMENU）
-VK_K = 0x4B
-VK_N = 0x4E
+VK_N = 0x4E                   # N（Ctrl+N 新建对话）
 VK_OEM_4 = 0xDB               # [
 VK_OEM_6 = 0xDD               # ]
 
@@ -95,12 +94,10 @@ VK_DOWN = 0x28
 # 键位调整新增
 VK_SHIFT = 0x10
 VK_INSERT = 0x2D
-VK_DELETE = 0x08
 VK_PRIOR = 0x21               # PgUp
 VK_NEXT = 0x22                # PgDn
 VK_C = 0x43
 VK_V = 0x56
-VK_T = 0x54
 MOUSEEVENTF_WHEEL = 0x0800
 WHEEL_DELTA = 120
 WHEEL_MIN_INTERVAL = 0.09     # 滚轮最小间隔，防止按住时滚得飞快
@@ -145,6 +142,9 @@ LOG_PATH = os.path.join(BASE_DIR, "bridge.log")
 _logf = None
 
 
+_LOG_LOCK = threading.Lock()   # 主线程与后台线程都会写日志，不加锁会串行错乱
+
+
 def log(msg):
     line = "[%s] %s" % (time.strftime("%H:%M:%S"), msg)
     # --noconsole 打包后 sys.stdout 是 None，直接 print 会抛异常
@@ -154,8 +154,12 @@ def log(msg):
         except Exception:
             pass
     if _logf:
-        _logf.write(line + "\n")
-        _logf.flush()
+        with _LOG_LOCK:
+            try:
+                _logf.write(line + "\n")
+                _logf.flush()
+            except Exception:
+                pass
 
 
 # ---------------- SendInput 封装 ----------------
@@ -307,27 +311,6 @@ def tap_wheel(delta):
     if sendinput(1, ctypes.byref(i), ctypes.sizeof(INPUT)) != 1:
         raise OSError(ctypes.get_last_error(), "SendInput 滚轮失败")
     return True
-
-
-def notify(title, text):
-    """托盘气泡通知（主动弹出，几秒后自动消失）。
-
-    气泡失败绝不能影响主逻辑，所以整段包在 try 里。
-    """
-    if TRAY_NID is None:
-        return
-    try:
-        nid = NOTIFYICONDATAW()
-        ctypes.pointer(nid)[0] = TRAY_NID      # 复制现有图标信息
-        nid.uFlags = NIF_INFO
-        nid.szInfoTitle = title
-        nid.szInfo = text
-        nid.dwInfoFlags = 0x1                  # NIIF_INFO
-        nid.uVersion = 0
-        if not shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(nid)):
-            log("气泡通知发送失败（err=%d）" % ctypes.get_last_error())
-    except Exception as e:
-        log("气泡通知异常: %r" % (e,))
 
 
 def mode_text():
@@ -1405,15 +1388,6 @@ def promote_tray_async(hwnd):
         log("托盘图标常驻设置未生效，可在「任务栏设置」里手动拖出")
 
     threading.Thread(target=worker, daemon=True).start()
-
-
-def set_tray_tip(text):
-    if TRAY_NID is None:
-        return
-    TRAY_NID.szTip = text
-    TRAY_NID.uFlags = NIF_TIP
-    shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(TRAY_NID))
-    TRAY_NID.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
 
 
 def remove_tray():

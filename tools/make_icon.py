@@ -75,27 +75,6 @@ def arrows_alpha(x, y):
     return False
 
 
-def four_way_alpha(x, y):
-    """十字四向箭头，用于「编辑模式」图标。
-
-    杆要比箭头底边略窄一点点，缺口才不会变成明显的方块孔。
-    """
-    BAR = 0.076
-    if abs(x - 0.50) <= BAR and 0.30 <= y <= 0.70:
-        return True
-    if abs(y - 0.50) <= BAR and 0.30 <= x <= 0.70:
-        return True
-    if 0.16 <= y <= 0.34 and abs(x - 0.50) <= 0.106 * (y - 0.16) / 0.18:
-        return True
-    if 0.66 <= y <= 0.84 and abs(x - 0.50) <= 0.106 * (0.84 - y) / 0.18:
-        return True
-    if 0.16 <= x <= 0.34 and abs(y - 0.50) <= 0.106 * (x - 0.16) / 0.18:
-        return True
-    if 0.66 <= x <= 0.84 and abs(y - 0.50) <= 0.106 * (0.84 - x) / 0.18:
-        return True
-    return False
-
-
 def in_ellipse(x, y, cx, cy, rx, ry):
     return ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1.0
 
