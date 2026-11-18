@@ -558,7 +558,10 @@ def set_mute(flag):
     p = audio_endpoint()
     if not p:
         return False
-    hr = _vt_call(p, 14, ctypes.c_long, (wintypes.BOOL,), wintypes.BOOL(flag))
+    # 注意签名是两个参数：SetMute(BOOL bMute, LPCGUID pguidEventContext)。
+    # 早先只传了一个，第二个参数读到栈上的垃圾值，导致复位时好时坏。
+    hr = _vt_call(p, 14, ctypes.c_long, (wintypes.BOOL, ctypes.c_void_p),
+                  wintypes.BOOL(flag), None)
     if hr != 0:
         log("[audio] SetMute(%s) 失败 hr=0x%08X" % (flag, hr & 0xFFFFFFFF))
     return hr == 0
@@ -655,10 +658,19 @@ def handle_mute_key():
         return
     if CFG.keep_mute_native:
         # 不拦 VK 0xAD：驱动层 toggle 一次（静音）、shell 处理键盘消息再 toggle 一次
-        # （取消静音），两次互相抵消，音量不动。这里绝不能再去碰音量，
-        # 否则就变成第三次 toggle，反而把静音打开。
+        # （取消静音），正常会互相抵消、音量不动，只会闪一下 OSD。
+        # 但系统偶尔忙，第二次没跟上就只剩一次 toggle、音量真的静音 —— 所以
+        # 等两次都落地之后再兜底检查一遍，仍然是静音就补回来。
+        before = EXPECTED_MUTE
         txt = toggle_mode()
-        log("静音键 → 切换上/下键模式：现在%s（音量由系统两次 toggle 抵消）" % txt)
+        log("静音键 → 切换上/下键模式：现在%s" % txt)
+        time.sleep(0.15)                 # 等两次 toggle 都落地（间隔约 40ms）
+        m = get_mute()
+        if before is not None and m is not None and m != before:
+            if set_mute(before):
+                log("  兜底：两次 toggle 未抵消（现在=%s），已恢复为 %s" % (m, before))
+            else:
+                log("  兜底：音量停在 %s，复位失败" % m)
         return
     before = EXPECTED_MUTE          # 按键前应有的状态
     actual = get_mute()             # 现在（可能已被驱动层改过）
@@ -1327,9 +1339,9 @@ def main():
     ap.add_argument("--own", action="store_true",
                     help="尝试独占消费者页（RIDEV_NOLEGACY）。实测这台复合设备会被系统拒绝"
                          "（err=1004），保留开关便于换设备时验证")
-    ap.add_argument("--keep-mute-native", dest="keep_mute_native", action="store_true",
-                    help="不拦截 VK 0xAD：驱动层静音一次、键盘默认处理再 toggle 一次，"
-                         "两者互相抵消，音量不变（推荐）")
+    ap.add_argument("--intercept-mute", dest="keep_mute_native", action="store_false",
+                    help="拦截 VK 0xAD，只留驱动层一次 toggle 再由 API 复位。"
+                         "默认不拦：让驱动层与 shell 各 toggle 一次互相抵消")
     CFG = ap.parse_args()
 
     _logf = open(LOG_PATH, "a", encoding="utf-8")
