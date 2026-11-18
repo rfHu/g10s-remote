@@ -82,8 +82,8 @@ VK_N = 0x4E                   # N（Ctrl+N 新建对话）
 VK_OEM_4 = 0xDB               # [
 VK_OEM_6 = 0xDD               # ]
 
-# 「第一阶段」正在生效时，这些键不触发收尾：
-# 修饰键本身（含我们自己注入的 Ctrl/Win/Alt）必须排除，否则一注入就自我打断
+# Alt+Tab 阶段生效时，这些键不触发收尾：
+# 修饰键本身（Alt 还按着）、Tab（原生就是轮换窗口）、四个方向键（用来选窗口）
 STAGE_KEEP_MODS = {0x10, 0x11, 0x12, 0x14, 0x5B, 0x5C,
                    0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
 # Alt+Tab 浮窗里要用左右/上下选窗口、Tab 轮换，这些不能触发收尾
@@ -361,14 +361,17 @@ def preempt_stages(vk):
     返回 True 表示这个键被「吸收」了：它只用来收尾，本身的动作不再执行。
     这样语音刚上屏时误按方向键/退格，就不会连带改掉刚说的话。
 
-    修饰键不触发，否则我们自己注入的 Ctrl/Win/Alt 会立刻把刚打开的状态关掉。
-    Alt+Tab 阶段的方向键与 Tab 也不触发 —— 那是用来选窗口的。
+    语音阶段「任何键」都收尾，包括修饰键 —— 用那个键代替再按一次麦克风键。
+    Alt+Tab 阶段仍排除修饰键、方向键与 Tab —— 那是用来选窗口的。
 
     注意：本函数运行在低级钩子回调里，全程必须极快，只能调 release_fast
-    （纯 keyup、不加锁不睡眠）。
+    （不加锁，只发两条带 20ms 间隔的 keyup）。
     """
     consumed = False
-    if VOICE.held and vk not in STAGE_KEEP_MODS:
+    if VOICE.held:
+        # 不排除修饰键：用户要求「说话时按任何键都算松手」，Ctrl/Shift/Alt 也算。
+        # 之所以敢放开，是因为我们注入的 Ctrl/Win 全部带 MAGIC_EXTRA，
+        # 钩子最上面那条判断会把它们原样放行，不会自我打断。
         try:
             VOICE.release_fast("被其他按键打断")
         except Exception as e:
@@ -490,10 +493,13 @@ class Voice:
             if self.held:
                 return False
             log("[voice] press 步骤1 发 Ctrl")
-            _send(VK_LCONTROL)
+            # 带 MAGIC_EXTRA：钩子认标记会放行，这样「修饰键也结束语音」
+            # 这条规则才安全 —— 否则我们自己注入的 Ctrl 一按下就会触发收尾，
+            # 语音刚开就被自己关掉。tap_chord（Ctrl+Alt+K）同款做法，已验证无害。
+            _send(VK_LCONTROL, extra=MAGIC_EXTRA)
             time.sleep(0.02)
             log("[voice] press 步骤2 发 Win")
-            _send(VK_LWIN, ext=True)
+            _send(VK_LWIN, ext=True, extra=MAGIC_EXTRA)
             self.held = True
             self.since = time.time()
             log("语音输入开始：已注入 Ctrl+Win 按下（再按一次结束）")
@@ -520,10 +526,10 @@ class Voice:
             self.held = False
             try:
                 log("[voice] release 步骤1 松 Win")
-                _send(VK_LWIN, up=True, ext=True)
+                _send(VK_LWIN, up=True, ext=True, extra=MAGIC_EXTRA)
                 time.sleep(0.02)
                 log("[voice] release 步骤2 松 Ctrl")
-                _send(VK_LCONTROL, up=True)
+                _send(VK_LCONTROL, up=True, extra=MAGIC_EXTRA)
             except Exception as e:
                 # held 已置 False，不能让修饰键就此卡住，必须硬松开
                 log("释放修饰键失败(%r)，强制松开" % (e,))
@@ -539,20 +545,27 @@ class Voice:
                 pass
 
     def release_fast(self, reason=""):
-        """低级钩子专用：只发两个 keyup，不加锁、不 sleep。
+        """低级钩子专用：不加锁，但按键序列与 release() 完全一致。
 
-        钩子回调必须在 300ms 内返回，超时会被系统静默摘除且不报任何错。
-        「sleep(0.02) + 等锁 0.8s」的组合足以踩线，所以钩子路径改走这条极简实现。
-        两条 keyup 本身是幂等的，即使和主路径重复也不会有副作用。
+        钩子回调必须在 300ms 内返回，超时会被系统静默摘除且不报任何错，
+        所以这里绝不能去抢 lock（release() 最长等 0.8s）。
+        但「松 Win → 等 20ms → 松 Ctrl」这个间隔必须保留：
+        微信输入法靠它识别组合键的结束，两条 keyup 紧贴着发会识别不到，
+        表现为「程序认为语音结束了，输入法还在录音」（2026-11-18 实测）。
+        20ms 远低于 300ms 预算，留在钩子里是安全的。
+        两条 keyup 本身幂等，即使和主路径重复也不会有副作用。
         """
         if not self.held:
             return False
         self.held = False
-        for key, ext in ((VK_LWIN, True), (VK_LCONTROL, False)):
-            try:
-                _send(key, up=True, ext=ext)
-            except Exception:
-                pass
+        try:
+            log("[voice] 打断释放 步骤1 松 Win")
+            _send(VK_LWIN, up=True, ext=True, extra=MAGIC_EXTRA)
+            time.sleep(0.02)
+            log("[voice] 打断释放 步骤2 松 Ctrl")
+            _send(VK_LCONTROL, up=True, extra=MAGIC_EXTRA)
+        except Exception:
+            pass
         log("语音输入结束（%s）" % reason)
         return True
 
@@ -561,7 +574,8 @@ class Voice:
         self.held = False
         for key, ext in ((VK_LWIN, True), (VK_LCONTROL, False)):
             try:
-                _send(key, up=True, ext=ext)
+                _send(key, up=True, ext=ext, extra=MAGIC_EXTRA)
+                time.sleep(0.01)
             except Exception:
                 pass
         log("语音输入已强制结束（%s）" % reason)
