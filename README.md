@@ -20,8 +20,6 @@
 
 **[⬇ 下载最新版 G10S-Remote.exe](https://github.com/rfHu/g10s-remote/releases/latest)**
 
-单文件 exe，Windows 10/11 64 位，双击即用，无需安装 Python。链接始终指向[最新版本](https://github.com/rfHu/g10s-remote/releases/latest)。
-
 ## 技术细节
 
 想了解实现原理和实测数据，看这些文档：
