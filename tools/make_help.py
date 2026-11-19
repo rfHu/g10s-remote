@@ -220,6 +220,14 @@ TPL = """<!DOCTYPE html>
   }
   .hint { margin-top:14px; padding:12px 14px; border-radius:9px;
           background:#fff8e6; border:1px solid #f0dfae; color:#6b5417; font-size:12.5px; }
+  .info-card {
+    position:relative; max-width:860px; background:#fff; border:1px solid var(--line);
+    border-radius:14px; padding:18px 24px 18px 26px; margin:14px auto 0; overflow:hidden;
+  }
+  .info-card::before { content:""; position:absolute; left:0; top:0; bottom:0;
+                       width:3px; background:#24A15A; }
+  .info-card h3 { margin:0 0 8px; font-size:15px; }
+  .info-card p { margin:0; color:#38414a; font-size:13px; line-height:1.7; }
 
   /* ---- 连线图 ---- */
   .stage {
@@ -406,6 +414,10 @@ TPL = """<!DOCTYPE html>
         <li>也可以右键图标 → 模式 → 选择</li>
       </ol>
       <div class="hint">切换模式不会改变音量。静音键的静音动作会被程序立刻撤销，但你可能会看到音量浮窗闪一下 —— 这是遥控器硬件层面的行为，软件无法完全避免。</div>
+    </div>
+    <div class="info-card">
+      <h3>关于语音输入</h3>
+      <p>语音输入依赖<b>微信输入法</b>（或任意带语音输入功能的输入法）实现，本程序只负责把麦克风键映射成<b>按住说话</b>的快捷键。没装这类输入法时，麦克风键不会有语音输入效果。</p>
     </div>
   </section>
 
