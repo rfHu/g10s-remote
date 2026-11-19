@@ -18,7 +18,9 @@
 
 ## 下载
 
-**[⬇ 下载最新版 G10S-Remote.exe](https://github.com/rfHu/g10s-remote/releases/latest)**
+**[⬇ 下载最新版（Windows 64 位，单文件免安装）](https://github.com/rfHu/g10s-remote/releases/latest)**
+
+包名带版本号，如 `G10S-Remote-v0.0.3.exe`；每次更新都在 Release 页列出改动。
 
 ## 技术细节
 
