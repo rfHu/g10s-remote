@@ -44,6 +44,7 @@ MAGIC_EXTRA = 0x47475331      # "GGS1"：给我们自己 SendInput 出来的事�
 WM_INPUT = 0x00FF
 WM_APP_KEYMAP = 0x8001        # 钩子把「命中的按键」转发给消息循环处理
 WM_TRAYICON = 0x8002          # 托盘图标的回调消息
+WM_APP_BULB = 0x8003          # 灯泡键的按下/松开（wparam=0 按下，1 松开，lparam=按住毫秒）
 WM_TIMER = 0x0113             # 定时器（用于区分托盘单击与双击）
 WM_COMMAND_ = 0x0111
 MENU_OPEN_LOG = 1001
@@ -58,6 +59,7 @@ MF_STRING, MF_CHECKED, MF_SEPARATOR, MF_POPUP = 0x0000, 0x0008, 0x0800, 0x0010
 # 这段时间内没有第二次点击才算单击。双击时间由系统决定（默认 500ms），
 # 350ms 足以区分，又不会让单击感觉拖沓。
 TIMER_SINGLE_CLICK = 1
+TIMER_BULB_HOLD = 2           # 灯泡键长按计时
 _PENDING_CLICK = False
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "G10S-Remote"
@@ -1152,6 +1154,10 @@ def low_level_proc(n_code, w_param, l_param):
             return 1
         act = KEY_ACTIONS_BY_MODE.get(KEY_MODE, {}).get(kb.vkCode)
         if act is not None:
+            if act[0] == "tap_hold":
+                # 单击 / 长按靠按住时长区分：钩子里只记时间戳，判定交给消息循环
+                on_tap_hold_key(w_param in (0x0100, 0x0104))
+                return 1
             # 不在这里做注入：钩子回调有 300ms 超时限制（超时会被系统静默摘除），
             # 转给消息循环处理，回调立刻返回。
             if w_param in (0x0100, 0x0104):        # WM_KEYDOWN / WM_SYSKEYDOWN
@@ -1159,6 +1165,75 @@ def low_level_proc(n_code, w_param, l_param):
                     u32.PostMessageW(HWND, WM_APP_KEYMAP, kb.vkCode, 0)
             return 1        # 表里有的键一律吃掉原功能
     return u32.CallNextHookEx(None, n_code, w_param, l_param)
+
+
+# ---------------- 单击 / 长按（灯泡键） ----------------
+# 键盘页直发的键（灯泡 0x5D、方向键、DEL）在钩子里能同时收到按下和松开，
+# 按住时长是可测的；消费者页那几颗（静音、播放、返回、音量、麦克风、OK）不行 ——
+# 实测设备自己 120–200ms 就把 usage 归零，跟手指按多久无关。
+#
+# 判定不能放在钩子回调里：回调超过 300ms 会被系统静默摘钩子。
+# 所以钩子只记时间戳 + 转投消息，真正的判定在消息循环里做。
+_bulb_down_at = 0.0       # 本次按下的 monotonic 时刻；0 表示当前没按下
+_bulb_hold_fired = False  # 已判定为长按（右键已发），松开时不再补单击动作
+_bulb_last_tap = 0.0      # 上一次短按的时刻，用来吞掉双击的第二下
+
+
+def on_tap_hold_key(down):
+    """钩子侧：只记录时间戳并转投消息，不做任何耗时判断。"""
+    global _bulb_down_at, _bulb_hold_fired
+    if down:
+        if _bulb_down_at:          # 按住时系统连发的重复按下，忽略
+            return
+        _bulb_hold_fired = False   # 新的一次按下，清掉上一轮可能残留的标记
+        _bulb_down_at = time.monotonic()
+        if HWND:
+            u32.PostMessageW(HWND, WM_APP_BULB, 0, 0)
+        return
+    if not _bulb_down_at:
+        return
+    held_ms = int((time.monotonic() - _bulb_down_at) * 1000)
+    _bulb_down_at = 0.0
+    if HWND:
+        u32.PostMessageW(HWND, WM_APP_BULB, 1, held_ms)
+
+
+def fire_bulb_hold():
+    """长按：发一次鼠标右键。本次松开不再补回车。"""
+    global _bulb_hold_fired, _bulb_last_tap
+    _bulb_hold_fired = True
+    _bulb_last_tap = 0.0           # 长按之后重新计双击，别和上一下单击连起来
+    try:
+        tap_right_click()
+        log("灯泡键长按 → 鼠标右键")
+    except Exception as e:
+        log("注入右键失败: %r" % (e,))
+
+
+def on_bulb_release(held_ms):
+    """松开：以实测按住时长为准，决定长按还是单击。"""
+    global _bulb_hold_fired, _bulb_last_tap
+    fired = _bulb_hold_fired
+    _bulb_hold_fired = False
+    if fired:
+        return                              # 长按的右键已经发过了
+    if held_ms >= CFG.hold_ms:
+        # 定时器消息可能还排在队列里没轮到，这里用实测时长兜底
+        fire_bulb_hold()
+        _bulb_hold_fired = False
+        return
+    now = time.monotonic()
+    if _bulb_last_tap and (now - _bulb_last_tap) * 1000 < CFG.dbl_ms:
+        # 双击：第二下吞掉，避免在对话框里连发两条消息
+        _bulb_last_tap = 0.0
+        log("灯泡键双击 → 第二下已忽略（防连发）")
+        return
+    _bulb_last_tap = now
+    try:
+        tap_key(VK_RETURN)
+        log("灯泡键 → 回车")
+    except Exception as e:
+        log("注入回车失败: %r" % (e,))
 
 
 # ---------------- 窗口与消息循环 ----------------
@@ -1208,6 +1283,12 @@ def wndproc(hwnd, msg, wparam, lparam):
             _PENDING_CLICK = False
             toggle_mode()
         return 0
+    if msg == WM_TIMER and wparam == TIMER_BULB_HOLD:
+        u32.KillTimer(hwnd, TIMER_BULB_HOLD)
+        # 松开消息先到（已停止计时并处理完）就不再补发；正常按住时这里才是判定点
+        if _bulb_down_at:
+            fire_bulb_hold()
+        return 0
     if msg == WM_COMMAND_:               # 菜单项也可走 WM_COMMAND 投递
         handle_menu(wparam & 0xFFFF)
         return 0
@@ -1216,6 +1297,13 @@ def wndproc(hwnd, msg, wparam, lparam):
             on_raw_input(lparam)
         except Exception as e:
             log("解析出错: %r" % (e,))
+        return 0
+    if msg == WM_APP_BULB:
+        if wparam == 0:                     # 按下：起长按计时
+            u32.SetTimer(hwnd, TIMER_BULB_HOLD, CFG.hold_ms, None)
+        else:                               # 松开：先停表，再按实测时长判定
+            u32.KillTimer(hwnd, TIMER_BULB_HOLD)
+            on_bulb_release(lparam)
         return 0
     if msg == WM_APP_KEYMAP:
         if wparam in (VK_UP, VK_DOWN) and KEY_MODE == "watch":
@@ -1667,9 +1755,16 @@ def main():
                     default=False,
                     help="不拦截 VK 0xAD（实测系统只会 toggle 一次，仍需兜底）。"
                          "默认拦截：只剩驱动层一次 toggle，随即用 API 复位")
+    ap.add_argument("--hold-ms", dest="hold_ms", type=int, default=300,
+                    help="灯泡键长按判定阈值（毫秒），按住超过它发鼠标右键，默认 300")
+    ap.add_argument("--dbl-ms", dest="dbl_ms", type=int, default=250,
+                    help="灯泡键双击窗口（毫秒），窗口内的第二下被忽略，防连发两条消息，默认 250")
     CFG = ap.parse_args()
 
     _logf = open(LOG_PATH, "a", encoding="utf-8")
+    if CFG.dbl_ms >= CFG.hold_ms:
+        CFG.dbl_ms = max(120, CFG.hold_ms - 50)
+        log("警告：双击窗口不小于长按阈值，已收敛为 %dms" % CFG.dbl_ms)
     log("=" * 50)
     log("启动：设备 %s:%s  OK键=%s  语音键=%s（%s）%s%s"
         % (CFG.vid.upper(), CFG.pid.upper(), CFG.ok_mode,
@@ -1681,8 +1776,9 @@ def main():
     edit = KEY_ACTIONS_BY_MODE["edit"]
     watch = KEY_ACTIONS_BY_MODE["watch"]
 
-    # 对话模式：跟 AI 说话、发消息。灯泡键最好按，留给最高频的回车
-    edit[VK_APPS] = ("key", VK_RETURN, "灯泡键 → 回车")
+    # 对话模式：跟 AI 说话、发消息。灯泡键最好按，留给最高频的回车；
+    # tap_hold = 单击回车、按住出右键（右键是低频操作，等 300ms 无感）
+    edit[VK_APPS] = ("tap_hold", VK_RETURN, "灯泡键 → 回车（长按鼠标右键）")
     edit[VK_MEDIA_PLAY_PAUSE] = ("chord", ((VK_CONTROL,), VK_N),
                                  "播放键 → Ctrl+N（新建对话）")
     edit[VK_BROWSER_BACK] = ("key", VK_ESCAPE, "返回键 → Esc")
@@ -1692,7 +1788,7 @@ def main():
                      "PgDn → Ctrl+]（下一个对话）")
 
     # 观看模式：浏览 / 看视频。播放键、返回键不写进表 → 保持原生
-    watch[VK_APPS] = ("key", VK_RETURN, "灯泡键 → 回车")
+    watch[VK_APPS] = ("tap_hold", VK_RETURN, "灯泡键 → 回车（长按鼠标右键）")
     watch[VK_PRIOR] = ("chord", ((VK_CONTROL,), VK_TAB),
                        "PgUp → Ctrl+Tab（下一个标签页）")
     watch[VK_NEXT] = ("chord", ((VK_CONTROL, VK_SHIFT), VK_TAB),
@@ -1756,6 +1852,8 @@ def main():
         for src in sorted(INTERCEPT_ONLY):
             log("已拦截 0x%02X（吃掉原生键，动作由消费者页报文触发）" % src)
         log("当前模式：%s" % mode_text())
+        log("灯泡键：单击回车 / 按住≥%dms 右键 / %dms 内第二下忽略"
+            % (CFG.hold_ms, CFG.dbl_ms))
 
     if CFG.dry_run:
         log("dry-run：不注入任何按键，3 秒后退出")
