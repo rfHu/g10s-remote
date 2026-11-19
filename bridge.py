@@ -143,6 +143,25 @@ LOG_PATH = os.path.join(BASE_DIR, "bridge.log")
 _logf = None
 
 
+def read_version():
+    """版本号单一来源：仓库根目录的 VERSION 文件（build.bat 会一并打进 exe）。
+
+    写成函数而不是常量，是为了让源码运行时改完 VERSION 立刻生效，
+    打包后则从 _MEIPASS 里读同一份文件，不存在第二个版本号。
+    """
+    for base in (getattr(sys, "_MEIPASS", None), BASE_DIR):
+        if not base:
+            continue
+        try:
+            with open(os.path.join(base, "VERSION"), encoding="utf-8") as f:
+                v = f.read().strip()
+            if v:
+                return v
+        except OSError:
+            continue
+    return "unknown"
+
+
 _LOG_LOCK = threading.Lock()   # 主线程与后台线程都会写日志，不加锁会串行错乱
 
 
@@ -1672,6 +1691,7 @@ def main():
 
     _logf = open(LOG_PATH, "a", encoding="utf-8")
     log("=" * 50)
+    log("G10S-Remote v%s" % read_version())
     log("启动：设备 %s:%s  OK键=%s  语音键=%s（%s）%s%s"
         % (CFG.vid.upper(), CFG.pid.upper(), CFG.ok_mode,
            "开" if CFG.voice else "关", CFG.voice_mode,
