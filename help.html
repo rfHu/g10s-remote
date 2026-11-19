@@ -17,6 +17,9 @@
   .topbar { background:#fff; border-bottom:1px solid var(--line); }
   .topbar-inner { max-width:1120px; margin:0 auto; padding:20px 28px 0; }
   h1 { margin:0 0 2px; font-size:20px; font-weight:650; letter-spacing:.2px; }
+  h1 .ver { font-size:12px; font-weight:600; color:#57606a; background:#eef0f3;
+            border:1px solid #dcdfe4; border-radius:6px; padding:2px 8px;
+            margin-left:10px; vertical-align:middle; letter-spacing:0; }
   .sub { margin:0 0 16px; color:var(--muted); font-size:12.5px; }
   nav { display:flex; gap:6px; justify-content:center; }
   nav button {
@@ -189,6 +192,22 @@
   .lightbox img { max-width:100%; max-height:100%; object-fit:contain;
                   border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.4); }
 
+  /* ---- 版本日志 ---- */
+  .changelog { max-width:760px; margin:0 auto; }
+  .changelog > .lead { text-align:center; margin-bottom:22px; }
+  .ver-block {
+    background:#fff; border:1px solid var(--line); border-radius:13px;
+    padding:16px 20px; margin-bottom:14px;
+    box-shadow:0 1px 3px rgba(27,31,36,.04);
+  }
+  .ver-head { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+  .ver-tag { font-size:14px; font-weight:650; color:#1f6feb;
+             background:#eef4ff; border:1px solid #d6e4ff;
+             border-radius:6px; padding:2px 10px; }
+  .ver-date { font-size:12px; color:var(--faint); }
+  .ver-block ul { margin:0; padding-left:20px; color:#38414a; }
+  .ver-block li { margin:4px 0; font-size:13px; }
+
   @media (max-width:900px){
     .stage { grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:14px; }
     .remote-frame { height:600px; }
@@ -200,13 +219,14 @@
 </head>
 <body>
 <header class="topbar"><div class="topbar-inner">
-  <h1>G10S 遥控器按键说明</h1>
+  <h1>G10S 遥控器按键说明 <span class="ver">v0.0.3</span></h1>
   <p class="sub">同一批按键在两种模式下做不同的事 · 把鼠标移到卡片上可高亮对应按键</p>
   <nav>
     <button class="on" data-t="p1">模式切换</button>
     <button data-t="p2">对话模式</button>
     <button data-t="p3">观看模式</button>
     <button data-t="p4">联系我</button>
+    <button data-t="p5">版本日志</button>
   </nav>
 </div></header>
 
@@ -253,7 +273,8 @@
         <i class="anchor" data-key="power" style="left:28.0%;top:12.0%"></i>
 <i class="anchor" data-key="play" style="left:30.0%;top:16.5%"></i>
 <i class="anchor" data-key="back" style="left:70.0%;top:16.5%"></i>
-<i class="anchor" data-key="ring" style="left:50.0%;top:29.0%"></i>
+<i class="anchor" data-key="ring" style="left:50.0%;top:27.5%"></i>
+<i class="anchor" data-key="updown" style="left:50.0%;top:21.0%"></i>
 <i class="anchor" data-key="dir" style="left:42.0%;top:29.0%"></i>
 <i class="anchor" data-key="ret" style="left:30.0%;top:41.0%"></i>
 <i class="anchor" data-key="lamp" style="left:70.0%;top:41.0%"></i>
@@ -268,7 +289,7 @@
 <i class="anchor" data-key="mute" style="left:62.0%;top:65.0%"></i>
       </div>
       <div class="side right"><div class="card off" data-key="back" data-kind="off" data-pos="16.5" style="top:16.5%"><div class="r1"><span class="k">飞鼠开关</span><span class="v">—</span></div><div class="d">开启陀螺仪控制鼠标；开启后 OK 键变鼠标左键</div></div>
-<div class="card on" data-key="ring" data-kind="on" data-pos="29.0" style="top:29.0%"><div class="r1"><span class="k">方向环 / OK</span><span class="v">方向键 / Alt+Tab</span></div><div class="d">走光标；中间 OK 切窗口</div></div>
+<div class="card on" data-key="ring" data-kind="on" data-pos="27.5" style="top:27.5%"><div class="r1"><span class="k">方向环 / OK</span><span class="v">方向键 / Alt+Tab</span></div><div class="d">走光标；中间 OK 切窗口</div></div>
 <div class="card on" data-key="lamp" data-kind="on" data-pos="41.0" style="top:41.0%"><div class="r1"><span class="k">灯泡</span><span class="v">回车</span></div><div class="d">发送消息</div></div>
 <div class="card on" data-key="mic" data-kind="on" data-pos="54.0" style="top:54.0%"><div class="r1"><span class="k">麦克风</span><span class="v">Ctrl+Win</span></div><div class="d">语音输入，按一下开始、再按一下结束</div></div>
 <div class="card off" data-key="volpair" data-kind="off" data-pos="51.5" style="top:51.5%"><div class="r1"><span class="k">VOL + / −</span><span class="v">—</span></div><div class="d">音量加减</div></div>
@@ -283,7 +304,7 @@
     <div class="stage" data-mode="watch">
       <div class="side left"><div class="card off" data-key="power" data-kind="off" data-pos="12.0" style="top:12.0%"><div class="r1"><span class="k">电源</span><span class="v">—</span></div><div class="d">红外信号，蓝牙连接下无效</div></div>
 <div class="card on" data-key="play" data-kind="on" data-pos="16.5" style="top:16.5%"><div class="r1"><span class="k">播放</span><span class="v">播放 / 暂停</span></div><div class="d">原生媒体控制</div></div>
-<div class="card off" data-key="dir" data-kind="off" data-pos="29.0" style="top:29.0%"><div class="r1"><span class="k">左 / 右方向</span><span class="v">—</span></div><div class="d">光标移动、视频快进</div></div>
+<div class="card off" data-key="dir" data-kind="off" data-pos="29.0" style="top:29.0%"><div class="r1"><span class="k">左 / 右方向</span><span class="v">—</span></div><div class="d">光标移动、视频进退</div></div>
 <div class="card on" data-key="ret" data-kind="on" data-pos="41.0" style="top:41.0%"><div class="r1"><span class="k">返回</span><span class="v">浏览器后退 / 右键</span></div><div class="d">单击回到上一页；按住不放出鼠标右键</div></div>
 <div class="card on" data-key="pgpair" data-kind="on" data-pos="51.5" style="top:51.5%"><div class="r1"><span class="k">PgUp / PgDn</span><span class="v">Ctrl+Tab / Ctrl+Shift+Tab</span></div><div class="d">下一个 / 上一个标签页</div></div>
 <div class="card off" data-key="del" data-kind="off" data-pos="65.0" style="top:65.0%"><div class="r1"><span class="k">DEL</span><span class="v">—</span></div><div class="d">退格</div></div></div>
@@ -292,7 +313,8 @@
         <i class="anchor" data-key="power" style="left:28.0%;top:12.0%"></i>
 <i class="anchor" data-key="play" style="left:30.0%;top:16.5%"></i>
 <i class="anchor" data-key="back" style="left:70.0%;top:16.5%"></i>
-<i class="anchor" data-key="ring" style="left:50.0%;top:29.0%"></i>
+<i class="anchor" data-key="ring" style="left:50.0%;top:27.5%"></i>
+<i class="anchor" data-key="updown" style="left:50.0%;top:21.0%"></i>
 <i class="anchor" data-key="dir" style="left:42.0%;top:29.0%"></i>
 <i class="anchor" data-key="ret" style="left:30.0%;top:41.0%"></i>
 <i class="anchor" data-key="lamp" style="left:70.0%;top:41.0%"></i>
@@ -307,7 +329,8 @@
 <i class="anchor" data-key="mute" style="left:62.0%;top:65.0%"></i>
       </div>
       <div class="side right"><div class="card off" data-key="back" data-kind="off" data-pos="16.5" style="top:16.5%"><div class="r1"><span class="k">飞鼠开关</span><span class="v">—</span></div><div class="d">开启陀螺仪控制鼠标；开启后 OK 键变鼠标左键</div></div>
-<div class="card on" data-key="ring" data-kind="on" data-pos="29.0" style="top:29.0%"><div class="r1"><span class="k">上 / 下</span><span class="v">滚轮</span></div><div class="d">滚动页面，比翻页更顺</div></div>
+<div class="card on" data-key="updown" data-kind="on" data-pos="21.0" style="top:21.0%"><div class="r1"><span class="k">上 / 下</span><span class="v">滚轮</span></div><div class="d">滚动页面，比翻页更顺</div></div>
+<div class="card on" data-key="ring" data-kind="on" data-pos="27.5" style="top:27.5%"><div class="r1"><span class="k">OK</span><span class="v">Alt+Tab</span></div><div class="d">切窗口（飞鼠关时）</div></div>
 <div class="card on" data-key="lamp" data-kind="on" data-pos="41.0" style="top:41.0%"><div class="r1"><span class="k">灯泡</span><span class="v">回车</span></div><div class="d">确认输入框里的内容</div></div>
 <div class="card on" data-key="mic" data-kind="on" data-pos="54.0" style="top:54.0%"><div class="r1"><span class="k">麦克风</span><span class="v">Ctrl+Win</span></div><div class="d">语音输入</div></div>
 <div class="card off" data-key="volpair" data-kind="off" data-pos="51.5" style="top:51.5%"><div class="r1"><span class="k">VOL + / −</span><span class="v">—</span></div><div class="d">音量加减</div></div>
@@ -348,6 +371,26 @@
           <div class="reward-note">扫码即可打赏<br>金额随意，心意领了</div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <section id="p5">
+    <div class="changelog">
+      <p class="lead">按版本倒序记录每次更新，完整历史见仓库的 CHANGELOG.md。</p>
+      <div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.3</span><span class="ver-date">2026-11-19</span></div><ul><li>灯泡键改为单击回车、长按鼠标右键、双击防连发，并补状态机自测</li>
+<li>右键改用「长按返回」：固件改发 AC Home，去掉软件计时</li>
+<li>说明页：观看模式补 OK 键说明，左/右方向「视频快进」改为「视频进退」</li>
+<li>建立版本机制：版本号单一来源（VERSION），说明页显示版本号并新增「版本日志」页签</li></ul></div>
+<div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.2</span><span class="ver-date">2026-11-18</span></div><ul><li>语音打断路径补回 20ms 间隔，修饰键也能结束语音</li>
+<li>补上 OK 键这条漏网的语音收尾路径</li>
+<li>静音键在语音中只收尾不切模式，音量复位照做</li>
+<li>README 改为说明页三个页签的截图版，加入下载入口</li></ul></div>
+<div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.1</span><span class="ver-date">2026-11-18</span></div><ul><li>初始发布：播放键→回车，麦克风键→Ctrl+Win 语音输入</li>
+<li>两种模式（对话 / 观看）与托盘图标、右键菜单、开机自启</li>
+<li>静音键切模式 + Core Audio 立即复位音量，蓝牙按 AVRCP 延迟同步</li>
+<li>OK 键两种身份统一处理为 Alt+Tab 窗口切换</li>
+<li>键位表驱动映射、阶段收尾、单实例保护</li>
+<li>单文件 exe 打包，附带遥控器图解的按键说明页</li></ul></div>
     </div>
   </section>
 </main>
@@ -477,7 +520,7 @@
     if (e.key === 'Escape') lb.classList.remove('on');
   });
 
-  var m = location.hash.match(/^#(p[1-4])$/);
+  var m = location.hash.match(/^#(p[1-5])$/);
   if (m) activate(m[1]);
 
   window.addEventListener('load', refresh);

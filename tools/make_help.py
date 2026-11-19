@@ -13,7 +13,9 @@
 用法：python tools/make_help.py
 """
 import base64
+import html as html_mod
 import os
+import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REMOTE = os.path.join(ROOT, "assets", "remote-crop.jpg")
@@ -22,7 +24,15 @@ ICON_WATCH = os.path.join(ROOT, "app-preview-watch.png")
 WHALE = os.path.join(ROOT, "assets", "whale-chan.png")
 QR_WECHAT = os.path.join(ROOT, "assets", "qr-wechat-crop.jpg")
 QR_ALIPAY = os.path.join(ROOT, "assets", "qr-alipay-crop.jpg")
+VERSION_FILE = os.path.join(ROOT, "VERSION")
+CHANGELOG = os.path.join(ROOT, "CHANGELOG.md")
 OUT = os.path.join(ROOT, "help.html")
+
+
+def read_version():
+    """版本号单一来源：VERSION 文件。禁止在别处手写版本号。"""
+    with open(VERSION_FILE, encoding="utf-8") as f:
+        return f.read().strip()
 
 
 def data_uri(path, mime):
@@ -36,7 +46,8 @@ KEY = {
     "power": (28.0, 12.0),
     "play": (30.0, 16.5),
     "back": (70.0, 16.5),   # 右上角飞鼠 / 陀螺仪开关，未接管
-    "ring": (50.0, 29.0),   # 方向环中心，也是 OK 键
+    "ring": (50.0, 27.5),   # 方向环中心圆圈，OK 键
+    "updown": (50.0, 21.0), # 方向环上箭头：上 / 下（观看模式=滚轮）
     "dir": (42.0, 29.0),    # 方向环左箭头：左 / 右方向
     "ret": (30.0, 41.0),    # 房子 + 弯箭头
     "lamp": (70.0, 41.0),   # ≡ + 灯泡
@@ -72,14 +83,15 @@ DIALOG_RIGHT = [
 WATCH_LEFT = [
     ("power", "电源", "—", "红外信号，蓝牙连接下无效", "off"),
     ("play", "播放", "播放 / 暂停", "原生媒体控制", "on"),
-    ("dir", "左 / 右方向", "—", "光标移动、视频快进", "off"),
+    ("dir", "左 / 右方向", "—", "光标移动、视频进退", "off"),
     ("ret", "返回", "浏览器后退 / 右键", "单击回到上一页；按住不放出鼠标右键", "on"),
     ("pgpair", "PgUp / PgDn", "Ctrl+Tab / Ctrl+Shift+Tab", "下一个 / 上一个标签页", "on"),
     ("del", "DEL", "—", "退格", "off"),
 ]
 WATCH_RIGHT = [
     ("back", "飞鼠开关", "—", "开启陀螺仪控制鼠标；开启后 OK 键变鼠标左键", "off"),
-    ("ring", "上 / 下", "滚轮", "滚动页面，比翻页更顺", "on"),
+    ("updown", "上 / 下", "滚轮", "滚动页面，比翻页更顺", "on"),
+    ("ring", "OK", "Alt+Tab", "切窗口（飞鼠关时）", "on"),
     ("lamp", "灯泡", "回车", "确认输入框里的内容", "on"),
     ("mic", "麦克风", "Ctrl+Win", "语音输入", "on"),
     ("volpair", "VOL + / −", "—", "音量加减", "off"),
@@ -110,6 +122,32 @@ def build_anchors():
     return "\n".join(out)
 
 
+def build_changelog():
+    """把 CHANGELOG.md 解析成版本日志卡片（数据只有 CHANGELOG.md 一份来源）。"""
+    with open(CHANGELOG, encoding="utf-8") as f:
+        text = f.read()
+    # 每个版本：## vX.Y.Z — YYYY-MM-DD，下面是 - 条目
+    blocks = re.split(r"^##\s+", text, flags=re.M)[1:]
+    out = []
+    for block in blocks:
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        title = lines[0]
+        m = re.match(r"(v[\d.]+)\s*[—-]\s*(\d{4}-\d{2}-\d{2})", title)
+        if m:
+            ver, date = m.group(1), m.group(2)
+        else:
+            ver, date = title, ""
+        items = [ln[1:].strip() for ln in lines[1:] if ln.startswith("- ")]
+        lis = "\n".join("<li>%s</li>" % html_mod.escape(it) for it in items)
+        out.append(
+            '<div class="ver-block"><div class="ver-head">'
+            '<span class="ver-tag">%s</span><span class="ver-date">%s</span></div>'
+            '<ul>%s</ul></div>' % (html_mod.escape(ver), html_mod.escape(date), lis))
+    return "\n".join(out)
+
+
 TPL = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -129,6 +167,9 @@ TPL = """<!DOCTYPE html>
   .topbar { background:#fff; border-bottom:1px solid var(--line); }
   .topbar-inner { max-width:1120px; margin:0 auto; padding:20px 28px 0; }
   h1 { margin:0 0 2px; font-size:20px; font-weight:650; letter-spacing:.2px; }
+  h1 .ver { font-size:12px; font-weight:600; color:#57606a; background:#eef0f3;
+            border:1px solid #dcdfe4; border-radius:6px; padding:2px 8px;
+            margin-left:10px; vertical-align:middle; letter-spacing:0; }
   .sub { margin:0 0 16px; color:var(--muted); font-size:12.5px; }
   nav { display:flex; gap:6px; justify-content:center; }
   nav button {
@@ -301,6 +342,22 @@ TPL = """<!DOCTYPE html>
   .lightbox img { max-width:100%; max-height:100%; object-fit:contain;
                   border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.4); }
 
+  /* ---- 版本日志 ---- */
+  .changelog { max-width:760px; margin:0 auto; }
+  .changelog > .lead { text-align:center; margin-bottom:22px; }
+  .ver-block {
+    background:#fff; border:1px solid var(--line); border-radius:13px;
+    padding:16px 20px; margin-bottom:14px;
+    box-shadow:0 1px 3px rgba(27,31,36,.04);
+  }
+  .ver-head { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+  .ver-tag { font-size:14px; font-weight:650; color:#1f6feb;
+             background:#eef4ff; border:1px solid #d6e4ff;
+             border-radius:6px; padding:2px 10px; }
+  .ver-date { font-size:12px; color:var(--faint); }
+  .ver-block ul { margin:0; padding-left:20px; color:#38414a; }
+  .ver-block li { margin:4px 0; font-size:13px; }
+
   @media (max-width:900px){
     .stage { grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:14px; }
     .remote-frame { height:600px; }
@@ -312,13 +369,14 @@ TPL = """<!DOCTYPE html>
 </head>
 <body>
 <header class="topbar"><div class="topbar-inner">
-  <h1>G10S 遥控器按键说明</h1>
+  <h1>G10S 遥控器按键说明 <span class="ver">{{VERSION}}</span></h1>
   <p class="sub">同一批按键在两种模式下做不同的事 · 把鼠标移到卡片上可高亮对应按键</p>
   <nav>
     <button class="on" data-t="p1">模式切换</button>
     <button data-t="p2">对话模式</button>
     <button data-t="p3">观看模式</button>
     <button data-t="p4">联系我</button>
+    <button data-t="p5">版本日志</button>
   </nav>
 </div></header>
 
@@ -410,6 +468,13 @@ TPL = """<!DOCTYPE html>
           <div class="reward-note">扫码即可打赏<br>金额随意，心意领了</div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <section id="p5">
+    <div class="changelog">
+      <p class="lead">按版本倒序记录每次更新，完整历史见仓库的 CHANGELOG.md。</p>
+      {{CHANGELOG}}
     </div>
   </section>
 </main>
@@ -539,7 +604,7 @@ TPL = """<!DOCTYPE html>
     if (e.key === 'Escape') lb.classList.remove('on');
   });
 
-  var m = location.hash.match(/^#(p[1-4])$/);
+  var m = location.hash.match(/^#(p[1-5])$/);
   if (m) activate(m[1]);
 
   window.addEventListener('load', refresh);
@@ -557,6 +622,8 @@ TPL = """<!DOCTYPE html>
 
 def main():
     html = (TPL
+            .replace("{{VERSION}}", "v" + read_version())
+            .replace("{{CHANGELOG}}", build_changelog())
             .replace("{{ICON_DIALOG}}", data_uri(ICON_DIALOG, "image/png"))
             .replace("{{ICON_WATCH}}", data_uri(ICON_WATCH, "image/png"))
             .replace("{{WHALE}}", data_uri(WHALE, "image/png"))
