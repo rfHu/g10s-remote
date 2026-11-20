@@ -277,7 +277,7 @@
       <div class="side left"><div class="card off" data-key="power" data-kind="off" data-pos="12.0" style="top:12.0%"><div class="r1"><span class="k">电源</span><span class="v">—</span></div><div class="d">红外信号，蓝牙连接下无效</div></div>
 <div class="card on" data-key="play" data-kind="on" data-pos="16.5" style="top:16.5%"><div class="r1"><span class="k">播放</span><span class="v">Ctrl+N</span></div><div class="d">新建对话</div></div>
 <div class="card off" data-key="dir" data-kind="off" data-pos="29.0" style="top:29.0%"><div class="r1"><span class="k">左 / 右方向</span><span class="v">—</span></div><div class="d">移动光标</div></div>
-<div class="card on" data-key="ret" data-kind="on" data-pos="41.0" style="top:41.0%"><div class="r1"><span class="k">返回</span><span class="v">Esc / 右键</span></div><div class="d">单击打断 AI 输出；按住不放出鼠标右键</div></div>
+<div class="card on" data-key="ret" data-kind="on" data-pos="41.0" style="top:41.0%"><div class="r1"><span class="k">返回</span><span class="v">Esc / 右键</span></div><div class="d">单击打断 AI 输出；按住不放 → 鼠标右键</div></div>
 <div class="card on" data-key="pgpair" data-kind="on" data-pos="51.5" style="top:51.5%"><div class="r1"><span class="k">PgUp / PgDn</span><span class="v">Ctrl+[ / Ctrl+]</span></div><div class="d">上一个 / 下一个对话</div></div>
 <div class="card off" data-key="del" data-kind="off" data-pos="65.0" style="top:65.0%"><div class="r1"><span class="k">DEL</span><span class="v">—</span></div><div class="d">退格，删掉刚打错的字</div></div></div>
       <div class="remote-frame">
@@ -317,7 +317,7 @@
       <div class="side left"><div class="card off" data-key="power" data-kind="off" data-pos="12.0" style="top:12.0%"><div class="r1"><span class="k">电源</span><span class="v">—</span></div><div class="d">红外信号，蓝牙连接下无效</div></div>
 <div class="card on" data-key="play" data-kind="on" data-pos="16.5" style="top:16.5%"><div class="r1"><span class="k">播放</span><span class="v">播放 / 暂停</span></div><div class="d">原生媒体控制</div></div>
 <div class="card off" data-key="dir" data-kind="off" data-pos="29.0" style="top:29.0%"><div class="r1"><span class="k">左 / 右方向</span><span class="v">—</span></div><div class="d">光标移动、视频进退</div></div>
-<div class="card on" data-key="ret" data-kind="on" data-pos="41.0" style="top:41.0%"><div class="r1"><span class="k">返回</span><span class="v">浏览器后退 / 右键</span></div><div class="d">单击回到上一页；按住不放出鼠标右键</div></div>
+<div class="card on" data-key="ret" data-kind="on" data-pos="41.0" style="top:41.0%"><div class="r1"><span class="k">返回</span><span class="v">浏览器后退 / 右键</span></div><div class="d">单击回到上一页；按住不放 → 鼠标右键</div></div>
 <div class="card on" data-key="pgpair" data-kind="on" data-pos="51.5" style="top:51.5%"><div class="r1"><span class="k">PgUp / PgDn</span><span class="v">Ctrl+Tab / Ctrl+Shift+Tab</span></div><div class="d">下一个 / 上一个标签页</div></div>
 <div class="card off" data-key="del" data-kind="off" data-pos="65.0" style="top:65.0%"><div class="r1"><span class="k">DEL</span><span class="v">—</span></div><div class="d">退格</div></div></div>
       <div class="remote-frame">
@@ -389,11 +389,12 @@
   <section id="p5">
     <div class="changelog">
       <p class="lead">按版本倒序记录每次更新，完整历史见仓库的 CHANGELOG.md。</p>
-      <div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.4-pre</span><span class="ver-date">2026-11-20</span></div><ul><li>托盘提示直接显示版本号（`G10S-Remote v0.0.4-pre ｜ 对话模式 ｜ 自启动开`），不再写「运行中」</li>
+      <div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.4-pre</span><span class="ver-date">2026-11-20</span></div><ul><li>托盘提示直接显示版本号（G10S-Remote v0.0.4-pre ｜ 对话模式 ｜ 自启动开），不再写「运行中」</li>
 <li>启动时校准开机自启动项：包名带版本号后升级不会改写注册表里的绝对路径，会导致开机拉起旧版本，现已自动纠正</li>
+<li>修正说明页版本日志里 v0.0.3 的键位描述：右键在返回键长按，不在灯泡键</li>
 <li>预发布版：不发布 Release，仅本地打包验证</li></ul></div>
-<div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.3</span><span class="ver-date">2026-11-19</span></div><ul><li>灯泡键改为单击回车、长按鼠标右键、双击防连发，并补状态机自测</li>
-<li>右键改用「长按返回」：固件改发 AC Home，去掉软件计时</li>
+<div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.3</span><span class="ver-date">2026-11-19</span></div><ul><li>鼠标右键挂在「返回」键长按上：短按后退/Esc，按住固件改发 AC Home(0xAC)，不靠软件计时</li>
+<li>灯泡键 → 回车（最好按的键留给最高频的发送）</li>
 <li>说明页：观看模式补 OK 键说明，左/右方向「视频快进」改为「视频进退」</li>
 <li>建立版本机制：版本号单一来源（VERSION），说明页显示版本号并新增「版本日志」页签</li></ul></div>
 <div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.2</span><span class="ver-date">2026-11-18</span></div><ul><li>语音打断路径补回 20ms 间隔，修饰键也能结束语音</li>
