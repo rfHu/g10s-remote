@@ -125,7 +125,6 @@ CONSUMER_OWNED = False     # 消费者页是否已由本程序独占（main() �
 _last_vol_log = 0.0
 
 SIZEOF_RAWINPUTHEADER = 24 if ctypes.sizeof(ctypes.c_void_p) == 8 else 16
-TRAY_TIP = "G10S 遥控器桥接：运行中"
 _ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 _PAD = 32 if ctypes.sizeof(ctypes.c_void_p) == 8 else 24
 
@@ -164,6 +163,12 @@ def read_version():
         except OSError:
             continue
     return "unknown"
+
+
+VERSION = read_version()
+# 托盘提示直接说版本号：光标移上去就能确认「现在跑的是哪一版」，
+# 不用再靠日志或任务管理器翻路径。模式与自启动状态由 tray_text() 追加。
+TRAY_TIP = "G10S-Remote v%s" % VERSION
 
 
 _LOG_LOCK = threading.Lock()   # 主线程与后台线程都会写日志，不加锁会串行错乱
@@ -1558,6 +1563,37 @@ def set_autostart(on):
         return False
 
 
+def heal_autostart():
+    """启动时校准自启项。
+
+    Run 键里存的是**绝对路径**，而包名带版本号（G10S-Remote-v0.0.3.exe）后
+    每次升级都是新文件名 —— 系统照旧去拉旧文件，旧的 exe 又还在原地，
+    结果就是「明明装了新版，开机跑的还是几个月前那版」。
+    只有用户手动关开一次自启动才会重写，所以这里每次启动对一下，不一致就改。
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY) as k:
+            old = winreg.QueryValueEx(k, AUTOSTART_NAME)[0]
+    except OSError:
+        return                      # 没开自启，没什么可校准的
+    old = str(old).strip()
+    if not getattr(sys, "frozen", False):
+        # 源码运行时 autostart_command() 是 pythonw + bridge.py，不该覆盖正式包的自启项
+        if old != autostart_command():
+            log("自启动项当前为 %s（源码模式不校准）" % old)
+        return
+    if AUTOSTART_NAME.lower() not in old.lower():
+        # 指向的不是本程序的包，别乱改
+        log("自启动项指向 %s，不是本程序的包，跳过校准" % old)
+        return
+    want = autostart_command()
+    if old == want:
+        return
+    if set_autostart(True):
+        log("自启动项指向已过期，已校准：%s → %s" % (old, want))
+
+
 def show_tray_menu(hwnd):
     menu = u32.CreatePopupMenu()
     if not menu:
@@ -1696,6 +1732,7 @@ def main():
     _logf = open(LOG_PATH, "a", encoding="utf-8")
     log("=" * 50)
     log("G10S-Remote v%s" % read_version())
+    heal_autostart()
     log("启动：设备 %s:%s  OK键=%s  语音键=%s（%s）%s%s"
         % (CFG.vid.upper(), CFG.pid.upper(), CFG.ok_mode,
            "开" if CFG.voice else "关", CFG.voice_mode,
