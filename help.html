@@ -227,7 +227,7 @@
 </head>
 <body>
 <header class="topbar"><div class="topbar-inner">
-  <h1>G10S 遥控器按键说明 <span class="ver">v0.0.3</span></h1>
+  <h1>G10S 遥控器按键说明 <span class="ver">v0.0.4-pre</span></h1>
   <p class="sub">同一批按键在两种模式下做不同的事 · 把鼠标移到卡片上可高亮对应按键</p>
   <nav>
     <button class="on" data-t="p1">模式切换</button>
@@ -389,7 +389,10 @@
   <section id="p5">
     <div class="changelog">
       <p class="lead">按版本倒序记录每次更新，完整历史见仓库的 CHANGELOG.md。</p>
-      <div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.3</span><span class="ver-date">2026-11-19</span></div><ul><li>灯泡键改为单击回车、长按鼠标右键、双击防连发，并补状态机自测</li>
+      <div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.4-pre</span><span class="ver-date">2026-11-20</span></div><ul><li>托盘提示直接显示版本号（`G10S-Remote v0.0.4-pre ｜ 对话模式 ｜ 自启动开`），不再写「运行中」</li>
+<li>启动时校准开机自启动项：包名带版本号后升级不会改写注册表里的绝对路径，会导致开机拉起旧版本，现已自动纠正</li>
+<li>预发布版：不发布 Release，仅本地打包验证</li></ul></div>
+<div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.3</span><span class="ver-date">2026-11-19</span></div><ul><li>灯泡键改为单击回车、长按鼠标右键、双击防连发，并补状态机自测</li>
 <li>右键改用「长按返回」：固件改发 AC Home，去掉软件计时</li>
 <li>说明页：观看模式补 OK 键说明，左/右方向「视频快进」改为「视频进退」</li>
 <li>建立版本机制：版本号单一来源（VERSION），说明页显示版本号并新增「版本日志」页签</li></ul></div>

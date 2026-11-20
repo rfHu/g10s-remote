@@ -134,7 +134,8 @@ def build_changelog():
         if not lines:
             continue
         title = lines[0]
-        m = re.match(r"(v[\d.]+)\s*[—-]\s*(\d{4}-\d{2}-\d{2})", title)
+        # 版本号允许带预发布后缀：v0.0.4-pre、v0.1.0-rc1
+        m = re.match(r"(v[\d.]+(?:-[0-9A-Za-z.]+)?)\s*[—-]\s*(\d{4}-\d{2}-\d{2})", title)
         if m:
             ver, date = m.group(1), m.group(2)
         else:
