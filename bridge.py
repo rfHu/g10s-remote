@@ -105,6 +105,10 @@ WHEEL_MIN_INTERVAL = 0.09     # 滚轮最小间隔，防止按住时滚得飞快
 KEY_MODE = "edit"             # "edit"=对话模式（上/下=方向键）；"watch"=观看模式（上/下=滚轮）
 VK_RETURN = 0x0D
 VK_ESCAPE = 0x1B
+# 扩展键：注入时必须带 KEYEVENTF_EXTENDEDKEY，否则部分程序（尤其浏览器）
+# 只看到扫描码、认不出是哪个键
+EXTENDED_VKS = {VK_BROWSER_BACK, VK_BROWSER_HOME, VK_MEDIA_PLAY_PAUSE,
+                VK_PRIOR, VK_NEXT, VK_INSERT}
 
 USAGE_PLAY_PAUSE = 0x00CD
 USAGE_VOICE = 0x00CF
@@ -480,10 +484,10 @@ def tap_paste():
         tap_chord((VK_SHIFT,), VK_INSERT)
 
 
-def tap_key(vk, extra=0):
-    _send(vk, extra=extra)
+def tap_key(vk, extra=0, ext=False):
+    _send(vk, ext=ext, extra=extra)
     time.sleep(0.01)
-    _send(vk, up=True, extra=extra)
+    _send(vk, up=True, ext=ext, extra=extra)
 
 
 # 每个模式一张映射表：源 VK -> (种类, 目标, 日志文案)。
@@ -1265,7 +1269,7 @@ def wndproc(hwnd, msg, wparam, lparam):
                 elif kind == "paste":
                     tap_paste()
                 else:
-                    tap_key(target)
+                    tap_key(target, ext=target in EXTENDED_VKS)
                 log("%s" % text)
             except Exception as e:
                 log("注入失败（%s）: %r" % (text, e))
@@ -1707,8 +1711,10 @@ def main():
     edit[VK_MEDIA_PLAY_PAUSE] = ("chord", ((VK_CONTROL,), VK_N),
                                  "播放键 → Ctrl+N（新建对话）")
     edit[VK_BROWSER_BACK] = ("key", VK_ESCAPE, "返回键 → Esc")
-    # 「返回」键长按时固件改发 AC Home，Windows 侧就是 VK 0xAC —— 它是个独立键值，
-    # 不用软件计时，天然零延迟、零误判。代价是失去「浏览器主页」这个本来也不常用的功能。
+    # 「返回」键按下后若停顿稍久，固件改发 AC Home(0x0223)，Windows 侧就是 VK 0xAC。
+    # 这是设备自己给出的「按住」判定，软件拿不到时长（实测两者都是固定 ~120ms 脉冲：
+    # 直读 HID 报告队列，每次按压恰好两帧 —— 一帧按下、一帧归零，按 0.1 秒和 2 秒一样）。
+    # 所以短/长由固件决定，我们只负责把这两个键值分别改写。
     edit[VK_BROWSER_HOME] = ("right_click", None, "长按返回 → 鼠标右键")
     edit[VK_PRIOR] = ("chord", ((VK_CONTROL,), VK_OEM_4),
                       "PgUp → Ctrl+[（上一个对话）")

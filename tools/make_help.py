@@ -446,7 +446,7 @@ TPL = """<!DOCTYPE html>
       <div class="side right">{{CARDS_WATCH_RIGHT}}</div>
       <svg class="wires" aria-hidden="true"></svg>
     </div>
-    <p class="foot">观看模式只接管上/下（滚轮）、灯泡、PgUp/PgDn、长按返回（右键）和静音键，其余全部交还系统。</p>
+    <p class="foot">观看模式只接管上/下（滚轮）、灯泡、PgUp/PgDn、返回键和静音键，其余全部交还系统。</p>
   </section>
 
   <section id="p4">
