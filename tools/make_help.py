@@ -14,13 +14,20 @@
 """
 import base64
 import html as html_mod
+import json
 import os
 import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+import custom_mode
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REMOTE = os.path.join(ROOT, "assets", "remote-crop.jpg")
 ICON_DIALOG = os.path.join(ROOT, "app-preview-dialog.png")
 ICON_WATCH = os.path.join(ROOT, "app-preview-watch.png")
+ICON_CUSTOM = os.path.join(ROOT, "app-preview-custom.png")
 WHALE = os.path.join(ROOT, "assets", "whale-chan.png")
 QR_WECHAT = os.path.join(ROOT, "assets", "qr-wechat-crop.jpg")
 QR_ALIPAY = os.path.join(ROOT, "assets", "qr-alipay-crop.jpg")
@@ -49,6 +56,10 @@ KEY = {
     "ring": (50.0, 27.5),   # 方向环中心圆圈，OK 键
     "updown": (50.0, 21.0), # 方向环上箭头：上 / 下（观看模式=滚轮）
     "dir": (42.0, 29.0),    # 方向环左箭头：左 / 右方向
+    "up": (50.0, 22.0),     # 方向环上箭头（自定义页单独指向）
+    "down": (50.0, 36.0),   # 方向环下箭头
+    "left": (28.0, 29.0),   # 方向环左箭头
+    "right": (72.0, 29.0),  # 方向环右箭头
     "ret": (30.0, 41.0),    # 房子 + 弯箭头
     "lamp": (70.0, 41.0),   # ≡ + 灯泡
     "pgup": (30.0, 48.0),
@@ -61,6 +72,48 @@ KEY = {
     "del": (43.0, 65.0),
     "mute": (62.0, 65.0),
 }
+
+# 自定义页沿用同一张遥控器图：源键 -> (锚点, 左右侧)。位置由 KEY 自动带出。
+CUSTOM_LAYOUT = {
+    "vk:0xB3":       ("play",    "left"),
+    "vk:0xA6":       ("ret",     "left"),
+    "vk:0xAC":       ("ret",     "left"),
+    "vk:0x21":       ("pgup",    "left"),
+    "vk:0x22":       ("pgdn",    "left"),
+    "vk:0x2E":       ("del",     "left"),
+    "vk:0x26":       ("up",      "right"),
+    "vk:0x28":       ("down",    "left"),
+    "vk:0x25":       ("left",    "left"),
+    "vk:0x27":       ("right",   "right"),
+    "consumer:0x41": ("ring",    "right"),
+    "mouse:left":    ("ring",    "right"),
+    "vk:0x5D":       ("lamp",    "right"),
+    "consumer:0xCF": ("mic",     "right"),
+}
+
+
+# 自定义页里「左」排在「下」前面；四个方向键已各有独立锚点，不再共用。
+CUSTOM_POS_OVERRIDE = {
+    "vk:0x25": 28.5,              # 左，显示在下前面
+    "vk:0x28": 30.5,              # 下，显示在左后面
+    "vk:0x26": KEY["up"][1],          # 上
+    "vk:0x27": KEY["ring"][1] - 0.5,  # 右，排在 OK 前面
+    "consumer:0x41": KEY["right"][1] + 0.5,  # OK（飞鼠关），排在右方向键后面
+    "mouse:left": 32.0,                     # OK（飞鼠开），排在飞鼠关后面
+}
+CUSTOM_FORCE_WIRE = {"consumer:0x41", "mouse:left"}  # 两张 OK 共用中心锚点，都要画线
+
+
+def custom_layout_json():
+    return json.dumps({
+        sid: {
+            "key": key,
+            "side": side,
+            "pos": CUSTOM_POS_OVERRIDE.get(sid, KEY[key][1]),
+            "forceWire": sid in CUSTOM_FORCE_WIRE,
+        }
+        for sid, (key, side) in CUSTOM_LAYOUT.items()
+    }, ensure_ascii=False)
 
 # 每行：(按键锚点, 按键名, 映射动作, 说明, 是否被程序接管)
 # kind = "on" 接管（实线 + 主题色）/ "off" 原生（虚线 + 灰）
@@ -97,6 +150,46 @@ WATCH_RIGHT = [
     ("volpair", "VOL + / −", "—", "音量加减", "off"),
     ("mute", "静音", "—", "切换模式，不动音量", "on"),
 ]
+
+
+# 出厂默认行为：没被用户改过的键显示这些值，文字用浅灰。
+CUSTOM_DEFAULTS = {
+    "vk:0xB3":       ("播放/暂停", "键盘上的 播放/暂停 键"),
+    "vk:0xA6":       ("浏览器后退", "键盘上的 浏览器后退 键"),
+    "vk:0xAC":       ("浏览器主页", "键盘上的 浏览器主页 键"),
+    "vk:0x5D":       ("菜单键", "键盘上的 菜单键（Apps）"),
+    "vk:0x21":       ("PageUp", "键盘上的 PageUp 键"),
+    "vk:0x22":       ("PageDown", "键盘上的 PageDown 键"),
+    "vk:0x26":       ("↑", "键盘上的 ↑ 键"),
+    "vk:0x28":       ("↓", "键盘上的 ↓ 键"),
+    "vk:0x25":       ("←", "键盘上的 ← 键"),
+    "vk:0x27":       ("→", "键盘上的 → 键"),
+    "vk:0x2E":       ("Backspace", "键盘上的 Backspace 键"),
+    "consumer:0x41": ("无", "键盘上无对应键（飞鼠关）"),
+    "consumer:0xCF": ("无", "键盘上无对应键"),
+    "mouse:left":    ("鼠标左键", "鼠标左键"),
+}
+
+# 这些按钮没有可映射的键盘事件，或按需求暂不允许修改；仍要展示默认行为。
+CUSTOM_READONLY = [
+    {"id": "power",   "label": "电源",        "key": "power",   "side": "right",
+     "default": "无",        "note": "红外电源键，无键盘事件，不可修改"},
+    {"id": "back",    "label": "飞鼠开关",    "key": "back",    "side": "right",
+     "default": "鼠标开关",   "note": "飞鼠硬件开关，无键盘事件，不可修改"},
+    {"id": "volpair", "label": "VOL + / −",   "key": "volpair", "side": "right",
+     "default": "音量 + / −", "note": "系统音量键，暂不允许修改"},
+    {"id": "mute",    "label": "静音",        "key": "mute",    "side": "right",
+     "default": "切换模式",   "note": "模式切换键，不可修改"},
+]
+
+
+def custom_readonly_json():
+    rows = []
+    for row in CUSTOM_READONLY:
+        item = dict(row)
+        item["pos"] = KEY[row["key"]][1]
+        rows.append(item)
+    return json.dumps(rows, ensure_ascii=False)
 
 
 def build_cards(rows):
@@ -185,6 +278,12 @@ TPL = """<!DOCTYPE html>
   section.on { display:block; }
   .lead { margin:0; color:var(--muted); font-size:13.5px; }
   .lead b { color:var(--ink); }
+  .mode-jump { margin:12px 0 16px; padding:6px 12px; border:1px solid #7C3AED;
+               border-radius:8px; background:#fff; color:#7C3AED;
+               font-family:inherit; font-size:12px; cursor:pointer; }
+  .mode-jump.on { background:#6D28D9; color:#fff; }
+  .mode-jump:disabled { border-color:var(--line); background:var(--bg);
+                        color:#9aa1a9; cursor:not-allowed; }
 
   /* ---- 模式切换页 ---- */
   .modes { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px;
@@ -237,6 +336,8 @@ TPL = """<!DOCTYPE html>
     gap:30px; align-items:stretch; margin-top:24px;
   }
   .stage[data-mode="watch"] { --accent:#2563C7; }
+  .stage[data-mode="custom"] { --accent:#7C3AED; }
+  .stage.custom-stage .remote-frame { height:1600px; }
   .side { position:relative; min-width:0; }
   .remote-frame {
     position:relative; height:720px; aspect-ratio:379/1164; margin:0 auto;
@@ -275,12 +376,92 @@ TPL = """<!DOCTYPE html>
   .card .k { font-size:11.5px; color:var(--faint); white-space:nowrap; }
   .card .v { font-size:14px; font-weight:650; color:var(--accent); white-space:nowrap; }
   .card .d { font-size:11.5px; color:var(--muted); }
+  .card.custom-card { padding:10px 12px; cursor:default; }
+  .custom-card .card-actions { margin-top:7px; }
+  .custom-card .combo { margin:0 0 6px; padding:6px 9px; font-size:12px; }
+  .capture-row { display:flex; gap:6px; align-items:stretch; margin-bottom:8px; }
+  .capture-row .combo { flex:1; min-width:0; height:30px; margin:0; padding:0 9px;
+                        line-height:28px; }
+  .combo-del { width:30px; height:30px; margin:0; padding:0; flex:none;
+               border:1px solid #e3e5e8; border-radius:9px; background:#fff;
+               color:#9aa1a9; font-size:16px; line-height:28px; cursor:pointer; }
+  .combo-del:hover { color:#B42318; border-color:#B42318; }
+  .mouse-sel { width:86px; height:30px; flex:none; border:1px solid var(--line);
+               border-radius:9px; background:#fff; color:var(--muted);
+               padding:0 4px; font-size:12px; }
+  .mouse-sel.active { border-color:#6D28D9; color:#6D28D9; font-weight:600; }
+  .custom-card.default .combo-del { display:none; }
+  .custom-card .note { padding:5px 8px; font-size:12px; }
+  .custom-card .hold-row { margin-top:6px; font-size:11.5px; }
+  .custom-card .hold-row.off { opacity:.45; }
+  .custom-card .v { display:none; }   /* 默认功能不写在右上角，改过之后会对不上 */
+  .custom-card .note::placeholder { color:#9aa1a9; }
+  .custom-card.readonly .d { color:#9aa1a9; font-size:11.5px; margin-top:6px; }
+  .custom-card.readonly .k::after { content:"（不可改）"; color:#9aa1a9; font-weight:400; }
   /* 原生键：弱化，但仍走同一套连线体系 */
   .card.off { background:#fbfcfd; }
   .card.off .v { color:#9aa1a9; font-weight:600; }
   .card.off .k { color:#8b949e; }
 
   .foot { margin-top:14px; color:var(--faint); font-size:12.5px; }
+
+  /* ---- 自定义按键 ---- */
+  .custom-tools {
+    max-width:860px; margin:18px auto 0; background:#fff; border:1px solid var(--line);
+    border-radius:13px; padding:14px 18px; display:flex; align-items:center;
+    gap:12px; flex-wrap:wrap; box-shadow:0 1px 3px rgba(27,31,36,.04);
+  }
+  .switch { position:relative; width:44px; height:24px; flex:none; }
+  .switch input { opacity:0; width:0; height:0; }
+  .slider { position:absolute; inset:0; background:#c8cdd4; border-radius:999px;
+            cursor:pointer; transition:background .18s; }
+  .slider:before { content:""; position:absolute; width:18px; height:18px; left:3px; top:3px;
+                   background:#fff; border-radius:50%; transition:transform .18s;
+                   box-shadow:0 1px 3px rgba(0,0,0,.2); }
+  .switch input:checked + .slider { background:#7C3AED; }
+  .switch input:checked + .slider:before { transform:translateX(20px); }
+  .switch-label { font-size:13px; color:#38414a; }
+  .custom-tools button {
+    margin-left:auto; border:1px solid var(--line); background:#fff; color:var(--muted);
+    border-radius:8px; padding:7px 14px; font:inherit; font-size:12.5px; cursor:pointer;
+    transition:.15s;
+  }
+  .custom-tools button:hover { border-color:#7C3AED; color:#7C3AED; }
+  .custom-tools .mode-jump { margin:0; flex:none; }
+  .custom-tools button.primary { background:#7C3AED; border-color:#7C3AED; color:#fff; }
+  .custom-tools button.primary:hover { background:#6D28D9; }
+  .custom-grid {
+    display:grid; grid-template-columns:repeat(auto-fill,minmax(238px,1fr));
+    gap:12px; max-width:860px; margin:16px auto 0;
+  }
+  .key-card {
+    background:#fff; border:1px solid var(--line); border-radius:12px;
+    padding:14px 15px; box-shadow:0 1px 3px rgba(27,31,36,.04);
+    transition:border-color .18s,box-shadow .18s;
+  }
+  .key-card.capturing { border-color:#7C3AED; box-shadow:0 0 0 3px rgba(124,58,237,.12); }
+  .key-top { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+  .key-name { font-size:14px; font-weight:650; }
+  .key-src { font:11px/1.5 ui-monospace, Consolas, monospace; color:var(--faint); }
+  .combo {
+    display:block; width:100%; margin:10px 0 8px; padding:9px 11px; text-align:left;
+    border:1px dashed #cfd4da; border-radius:9px; background:#fafbfc;
+    color:var(--faint); font:inherit; font-size:13px; cursor:pointer; transition:.15s;
+  }
+  .combo:hover { border-color:#7C3AED; color:#7C3AED; }
+  .combo.set { border-style:solid; border-color:#7C3AED; background:#f6f2ff;
+               color:#5B21B6; font-weight:600; }
+  .note {
+    width:100%; border:1px solid var(--line); border-radius:8px; padding:7px 10px;
+    font:inherit; font-size:12.5px; color:var(--ink); background:#fff;
+  }
+  .note:focus, .combo:focus { outline:none; border-color:#7C3AED; }
+  .hold-row { display:flex; align-items:center; gap:6px; margin-top:9px;
+              color:var(--muted); font-size:12px; cursor:pointer; user-select:none; }
+  .hold-row input { accent-color:#7C3AED; margin:0; cursor:pointer; }
+  .custom-status { max-width:860px; margin:12px auto 0; min-height:20px;
+                   color:#7C3AED; font-size:12.5px; }
+  .custom-empty { max-width:860px; margin:12px auto 0; color:var(--faint); font-size:12.5px; }
 
   /* ---- 联系我 ---- */
   .contact { max-width:760px; margin:0 auto; }
@@ -379,19 +560,20 @@ TPL = """<!DOCTYPE html>
 <body>
 <header class="topbar"><div class="topbar-inner">
   <h1>G10S 遥控器按键说明 <span class="ver">{{VERSION}}</span></h1>
-  <p class="sub">同一批按键在两种模式下做不同的事 · 把鼠标移到卡片上可高亮对应按键</p>
+  <p class="sub">同一批按键在三种模式下做不同的事 · 把鼠标移到卡片上可高亮对应按键</p>
   <nav>
     <button class="on" data-t="p1">模式切换</button>
     <button data-t="p2">对话模式</button>
     <button data-t="p3">观看模式</button>
-    <button data-t="p4">联系我</button>
-    <button data-t="p5">版本日志</button>
+    <button data-t="p4">自定义按键</button>
+    <button data-t="p5">联系我</button>
+    <button data-t="p6">版本日志</button>
   </nav>
 </div></header>
 
 <main>
   <section id="p1" class="on">
-    <p class="lead">遥控器有<b>两种模式</b>，同一批按键在不同模式下做不同的事。看托盘图标就知道当前在哪种模式。</p>
+    <p class="lead">遥控器有<b>三种模式</b>，同一批按键在不同模式下做不同的事。看托盘图标就知道当前在哪种模式。</p>
     <div class="modes">
       <div class="mode">
         <img src="{{ICON_DIALOG}}" alt="对话模式图标">
@@ -401,10 +583,9 @@ TPL = """<!DOCTYPE html>
         <img src="{{ICON_WATCH}}" alt="观看模式图标">
         <div><h3>观看模式</h3><p>用来浏览网页、看视频</p></div>
       </div>
-      <div class="mode soon">
-        <div class="soon-ico">✦</div>
-        <h3>更多模式实现中……</h3>
-        <p>敬请期待</p>
+      <div class="mode">
+        <img src="{{ICON_CUSTOM}}" alt="自定义模式图标">
+        <div><h3>自定义模式</h3><p>按键做什么，由你自己指定</p></div>
       </div>
     </div>
     <div class="switch-how">
@@ -414,7 +595,7 @@ TPL = """<!DOCTYPE html>
         <li>或者<b>左键单击</b>任务栏右下角的小图标</li>
         <li>也可以右键图标 → 模式 → 选择</li>
       </ol>
-      <div class="hint">切换模式不会改变音量。静音键的静音动作会被程序立刻撤销，但你可能会看到音量浮窗闪一下 —— 这是遥控器硬件层面的行为，软件无法完全避免。</div>
+      <div class="hint">切换模式不会改变音量。静音键的静音动作会被程序立刻撤销，但你可能会看到音量浮窗闪一下 —— 这是遥控器硬件层面的行为，软件无法完全避免。自定义模式的「可切换」开关只管静音键和托盘左键：关掉后这两种快捷方式会跳过它，右键菜单仍可直接进入。</div>
     </div>
     <div class="info-card">
       <h3>关于语音输入</h3>
@@ -424,6 +605,7 @@ TPL = """<!DOCTYPE html>
 
   <section id="p2">
     <p class="lead">主要面向 <b>WorkBuddy</b> 的使用场景：说话提问、发送、打断、在多个对话之间切换。</p>
+    <button type="button" class="mode-jump" data-mode="edit">切换至对话模式</button>
     <div class="stage" data-mode="dialog">
       <div class="side left">{{CARDS_DIALOG_LEFT}}</div>
       <div class="remote-frame">
@@ -438,6 +620,7 @@ TPL = """<!DOCTYPE html>
 
   <section id="p3">
     <p class="lead">主要面向 <b>Chrome 内核浏览器</b>（Chrome、Edge、Brave 等）：浏览网页、切换标签页、看视频。</p>
+    <button type="button" class="mode-jump" data-mode="watch">切换至观看模式</button>
     <div class="stage" data-mode="watch">
       <div class="side left">{{CARDS_WATCH_LEFT}}</div>
       <div class="remote-frame">
@@ -451,6 +634,27 @@ TPL = """<!DOCTYPE html>
   </section>
 
   <section id="p4">
+    <p class="lead">给遥控器按键设置动作：点卡片左边的按钮后按键盘组合，或在中间下拉选鼠标按键 / 滚轮；两者可同时保留，右边 × 清空。修改会<b>自动保存</b>。该功能<b>默认关闭</b>，要由你主动打开开关才会参与快捷切换。</p>
+    <div class="custom-tools">
+      <button type="button" class="mode-jump" data-mode="custom">切换至自定义模式</button>
+      <label class="switch"><input type="checkbox" id="customEnabled"><span class="slider"></span></label>
+      <span class="switch-label">允许静音键 / 托盘左键切到自定义模式</span>
+      <button id="resetCustom" type="button">清空全部</button>
+    </div>
+    <div class="stage custom-stage" data-mode="custom">
+      <div class="side left" id="customLeft" data-gap="20"></div>
+      <div class="remote-frame">
+        <img src="{{REMOTE}}" alt="遥控器">
+        {{ANCHORS}}
+      </div>
+      <div class="side right" id="customRight" data-gap="20"></div>
+      <svg class="wires" aria-hidden="true"></svg>
+    </div>
+    <div class="custom-status" id="customStatus"></div>
+    <p class="foot">灰色卡片显示出厂默认行为；不可改的按钮也一并列出，标题已注明。未设置的按键在自定义模式下保持原生行为。勾选「保持按下」后：第一次按该键保持按下，再按一次松开；期间按其他任何键只松开、那个键本身不执行。</p>
+  </section>
+
+  <section id="p5">
     <div class="contact">
       <p class="lead intro">遇到问题、有建议，或者单纯想说句话，都欢迎联系我。</p>
       <div class="contact-list">
@@ -484,7 +688,7 @@ TPL = """<!DOCTYPE html>
     </div>
   </section>
 
-  <section id="p5">
+  <section id="p6">
     <div class="changelog">
       <p class="lead">按版本倒序记录每次更新，完整历史见仓库的 CHANGELOG.md。</p>
       {{CHANGELOG}}
@@ -495,13 +699,24 @@ TPL = """<!DOCTYPE html>
 <div class="lightbox" id="lightbox"><img id="lightboxImg" alt="放大"></div>
 
 <script>
+window.G10S_TOKEN = "{{SESSION_TOKEN}}";
+window.G10S_SOURCES = {{CUSTOM_SOURCES}};
+window.G10S_CUSTOM_LAYOUT = {{CUSTOM_LAYOUT}};
+window.G10S_DEFAULTS = {{CUSTOM_DEFAULTS}};
+window.G10S_READONLY = {{CUSTOM_READONLY}};
+</script>
+<script>
 (function () {
   var f = function (n) { return Math.round(n * 10) / 10; };
 
   // 卡片按锚点 y 定位；若相邻两张挨得太近（或超出画布），沿纵向推开 / 回收。
   function layout(side) {
-    var cards = side.querySelectorAll('.card');
-    var prevBottom = -Infinity, gap = 9;
+    // 按遥控器上的纵向位置排序后再排布，保证卡片顺着按键从上到下走，
+    // 后追加的「不可改」卡片不会插到队尾导致连线往回绕。
+    var cards = [].slice.call(side.querySelectorAll('.card')).sort(function (a, b) {
+      return parseFloat(a.dataset.pos || 0) - parseFloat(b.dataset.pos || 0);
+    });
+    var prevBottom = -Infinity, gap = parseFloat(side.dataset.gap || 9);
     for (var i = 0; i < cards.length; i++) {
       var c = cards[i];
       var y = parseFloat(c.dataset.pos) / 100 * side.clientHeight;
@@ -510,12 +725,23 @@ TPL = """<!DOCTYPE html>
       c.style.top = y + 'px';
       prevBottom = y + h / 2;
     }
-    // 若最后一张溢出底部，整体上移
+    // 若最后一张溢出底部，整体上移；但不能把顶部卡片硬钳到同一高度造成重叠。
     var overflow = prevBottom - side.clientHeight;
-    if (overflow > 0) {
+    if (overflow > 0 && cards.length) {
+      var firstTop = parseFloat(cards[0].style.top);
+      var room = Math.max(0, firstTop - cards[0].offsetHeight / 2);
+      var shift = Math.min(overflow, room);
       for (var j = 0; j < cards.length; j++) {
-        var cy = parseFloat(cards[j].style.top) - overflow;
-        cards[j].style.top = Math.max(cards[j].offsetHeight / 2, cy) + 'px';
+        cards[j].style.top = (parseFloat(cards[j].style.top) - shift) + 'px';
+      }
+    }
+    // 自定义页：整列上移，让最上面一张卡的顶边与遥控器图片顶边齐平。
+    if (cards.length && side.parentNode && side.parentNode.dataset.mode === 'custom') {
+      var head = parseFloat(cards[0].style.top) - cards[0].offsetHeight / 2;
+      if (head > 0) {
+        for (var k = 0; k < cards.length; k++) {
+          cards[k].style.top = (parseFloat(cards[k].style.top) - head) + 'px';
+        }
       }
     }
   }
@@ -528,6 +754,7 @@ TPL = """<!DOCTYPE html>
     svg.setAttribute('viewBox', '0 0 ' + f(sr.width) + ' ' + f(sr.height));
     var out = '';
     stage.querySelectorAll('.card').forEach(function (card) {
+      if (card.dataset.nowire === '1') return;
       var key = card.dataset.key;
       var anchor = stage.querySelector('.anchor[data-key="' + key + '"]');
       if (!anchor) return;
@@ -551,6 +778,7 @@ TPL = """<!DOCTYPE html>
 
     // hover 联动：卡片 ↔ 连线 ↔ 遥控器上的按键光圈
     stage.querySelectorAll('.card').forEach(function (card) {
+      if (card.dataset.nowire === '1') return;
       var key = card.dataset.key;
       function set(on) {
         stage.querySelectorAll('[data-key="' + key + '"]').forEach(function (el) {
@@ -563,9 +791,22 @@ TPL = """<!DOCTYPE html>
     });
   }
 
+  function fitCustomRemote(stage) {
+    var frame = stage.querySelector('.remote-frame');
+    var top = stage.getBoundingClientRect().top;
+    var bottom = 0;
+    stage.querySelectorAll('.side .card').forEach(function (c) {
+      bottom = Math.max(bottom, c.getBoundingClientRect().bottom - top);
+    });
+    if (bottom > 0) frame.style.height = Math.round(bottom) + 'px';
+  }
   function refresh() {
     document.querySelectorAll('section.on .stage').forEach(function (stage) {
+      var isCustom = stage.dataset.mode === 'custom';
+      // 先还原到足够高再排卡片，之后按最低卡片收图；锚点/连线在 draw() 时按新尺寸重算。
+      if (isCustom) stage.querySelector('.remote-frame').style.height = '1600px';
       stage.querySelectorAll('.side').forEach(layout);
+      if (isCustom) fitCustomRemote(stage);
       draw(stage);
     });
   }
@@ -617,7 +858,375 @@ TPL = """<!DOCTYPE html>
     if (e.key === 'Escape') lb.classList.remove('on');
   });
 
-  var m = location.hash.match(/^#(p[1-5])$/);
+  // 自定义按键页：所有改键数据都来自本机服务，静态 file:// 打开时给出提示。
+  function api(path, method, body) {
+    var opt = { method: method || 'GET',
+                headers: { 'X-G10S-Token': window.G10S_TOKEN || '' } };
+    if (body) {
+      opt.headers['Content-Type'] = 'application/json';
+      opt.body = JSON.stringify(body);
+    }
+    return fetch(path, opt).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    });
+  }
+  var customEnabledForMode = false;
+  var MODE_LABELS = {edit:'对话模式', watch:'观看模式', custom:'自定义模式'};
+  function refreshModeButtons() {
+    var btns = document.querySelectorAll('.mode-jump');
+    if (!customReady) {
+      btns.forEach(function (b) {
+        b.disabled = true; b.textContent = '请从程序打开说明页';
+      });
+      return;
+    }
+    api('/api/mode').then(function (r) {
+      btns.forEach(function (b) {
+        var mode = b.dataset.mode;
+        var disabled = mode === 'custom' && !customEnabledForMode;
+        var active = r.mode === mode;
+        b.disabled = disabled;
+        b.classList.toggle('on', active);
+        b.textContent = active ? '当前模式' :
+                        (disabled ? '请先开启自定义模式' : '切换至' + (MODE_LABELS[mode] || mode));
+      });
+    }).catch(function () {
+      btns.forEach(function (b) { b.disabled = true; b.textContent = '读取模式失败'; });
+    });
+  }
+  function initModeButtons() {
+    document.querySelectorAll('.mode-jump').forEach(function (b) {
+      b.addEventListener('click', function () {
+        api('/api/mode', 'POST', {mode: b.dataset.mode}).then(refreshModeButtons)
+          .catch(function () { refreshModeButtons(); });
+      });
+    });
+    if (customReady) {
+      api('/api/config').then(function (r) {
+        customEnabledForMode = !!r.config.custom_enabled;
+        refreshModeButtons();
+      }).catch(refreshModeButtons);
+    } else {
+      refreshModeButtons();
+    }
+  }
+
+  function cstatus(msg, bad) {
+    var el = document.getElementById('customStatus');
+    el.textContent = msg || '';
+    el.style.color = bad ? '#B42318' : '#7C3AED';
+  }
+  var customReady = !!window.G10S_TOKEN &&
+                    window.G10S_TOKEN.indexOf('{{') !== 0;
+  var cLeft = document.getElementById('customLeft');
+  var cRight = document.getElementById('customRight');
+  var ctoggle = document.getElementById('customEnabled');
+  var cpoll = null;
+
+  function customCardEls() {
+    return document.querySelectorAll('#customLeft .custom-card, #customRight .custom-card');
+  }
+
+  var HOLD_TIP = '这个地方是保持键盘上对应的快捷键持续按下的状态，并且再次点击或者点击任意其他按键会视为松手。';
+
+  function makeCards(cfg) {
+    [cLeft, cRight].forEach(function (side) { side.innerHTML = ''; });
+    var seenKeys = {};
+    (window.G10S_SOURCES || []).forEach(function (s) {
+      var layout = (window.G10S_CUSTOM_LAYOUT || {})[s.id];
+      if (!layout) return;
+      var b = (cfg.bindings || {})[s.id] || {};
+      var def = (window.G10S_DEFAULTS || {})[s.id] || ['未设置', ''];
+      var acts = b.actions || (b.vk ? [{kind:'key', mods:b.mods || [], vk:b.vk}] : []);
+      var keyAct = null, mouseAct = null;
+      acts.forEach(function (a) {
+        if (a.kind === 'key') keyAct = a;
+        else if (a.kind === 'wheel' || a.kind === 'button') mouseAct = a;
+      });
+      var card = document.createElement('div');
+      card.className = 'card custom-card' + ((keyAct || mouseAct) ? '' : ' default');
+      card.dataset.id = s.id;
+      card.dataset.key = layout.key;
+      card.dataset.pos = layout.pos;
+      card.dataset.kind = (keyAct || mouseAct) ? 'on' : 'off';
+      card.dataset.mouseKind = mouseAct ? mouseAct.kind : '';
+      card.dataset.delta = mouseAct && mouseAct.kind === 'wheel' ? mouseAct.delta : '';
+      card.dataset.button = mouseAct && mouseAct.kind === 'button' ? mouseAct.button : '';
+      card.dataset.defaultLabel = def[0];
+      card.dataset.defaultNote = def[1];
+      // 同一物理按键有两张卡（短/长返回、上/下）时，只让第一张拉线，避免线叠在一起。
+      if (seenKeys[layout.key] && !layout.forceWire) {
+        card.dataset.nowire = '1';
+      } else {
+        seenKeys[layout.key] = true;
+      }
+      var r1 = document.createElement('div');
+      r1.className = 'r1';
+      var k = document.createElement('span');
+      k.className = 'k'; k.textContent = s.label;
+      var v = document.createElement('span');
+      v.className = 'v'; v.textContent = keyAct ? (keyAct.label || keyAct.vk) : def[0];
+      r1.appendChild(k); r1.appendChild(v);
+      card.appendChild(r1);
+      var actions = document.createElement('div');
+      actions.className = 'card-actions';
+      var capRow = document.createElement('div');
+      capRow.className = 'capture-row';
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'combo' + (keyAct ? ' set' : '');
+      btn.dataset.vk = keyAct ? keyAct.vk : '';
+      btn.dataset.mods = JSON.stringify(keyAct ? (keyAct.mods || []) : []);
+      btn.textContent = keyAct ? (keyAct.label || keyAct.vk) : '点击捕获快捷键';
+      var mouseSel = document.createElement('select');
+      mouseSel.className = 'mouse-sel' + (mouseAct ? ' active' : '');
+      mouseSel.setAttribute('aria-label', '鼠标动作');
+      mouseSel.innerHTML = '<option value="">鼠标空</option>' +
+        '<optgroup label="鼠标按键">' +
+        '<option value="button:left">鼠标左键</option>' +
+        '<option value="button:right">鼠标右键</option>' +
+        '<option value="button:middle">鼠标中键</option></optgroup>' +
+        '<optgroup label="滚轮操作">' +
+        '<option value="wheel:120">滚轮向上</option>' +
+        '<option value="wheel:-120">滚轮向下</option></optgroup>';
+      if (mouseAct && mouseAct.kind === 'wheel') {
+        mouseSel.value = 'wheel:' + mouseAct.delta;
+      } else if (mouseAct) {
+        mouseSel.value = 'button:' + mouseAct.button;
+      }
+      mouseSel.addEventListener('change', function () {
+        var val = mouseSel.value;
+        card.dataset.mouseKind = ''; card.dataset.delta = ''; card.dataset.button = '';
+        if (val.indexOf('wheel:') === 0) {
+          card.dataset.mouseKind = 'wheel';
+          card.dataset.delta = val.split(':')[1];
+        } else if (val.indexOf('button:') === 0) {
+          card.dataset.mouseKind = 'button';
+          card.dataset.button = val.split(':')[1];
+        }
+        mouseSel.classList.toggle('active', !!card.dataset.mouseKind);
+        card.classList.toggle('default', !btn.dataset.vk && !card.dataset.mouseKind);
+        card.dataset.kind = (btn.dataset.vk || card.dataset.mouseKind) ? 'on' : 'off';
+        updateHoldState(card);
+        autoSave('鼠标动作已自动保存');
+      });
+      var del = document.createElement('button');
+      del.type = 'button'; del.className = 'combo-del'; del.textContent = '×';
+      del.title = '去掉这个按键的映射';
+      del.setAttribute('aria-label', '去掉这个按键的映射');
+      del.addEventListener('click', function () {
+        if (card.dataset.capturing === '1') {
+          api('/api/capture/cancel', 'POST').then(function () {
+            endCaptureUI(card, true);
+            cstatus('已取消捕获');
+          }).catch(function (e) { cstatus('取消捕获失败：' + e.message, true); });
+        } else {
+          clearMapping(card);
+        }
+      });
+      capRow.appendChild(btn); capRow.appendChild(mouseSel); capRow.appendChild(del);
+      var note = document.createElement('input');
+      note.className = 'note'; note.type = 'text'; note.maxLength = 80;
+      note.placeholder = def[1]; note.value = b.note || '';
+      var noteTimer = null;
+      note.addEventListener('input', function () {
+        clearTimeout(noteTimer);
+        noteTimer = setTimeout(function () { autoSave('备注已自动保存'); }, 400);
+      });
+      var holdRow = document.createElement('label');
+      holdRow.className = 'hold-row';
+      holdRow.title = HOLD_TIP;
+      var hold = document.createElement('input');
+      hold.type = 'checkbox'; hold.className = 'hold-toggle'; hold.checked = !!b.hold;
+      hold.title = HOLD_TIP;
+      hold.addEventListener('change', function () { autoSave('保持按下设置已自动保存'); });
+      holdRow.appendChild(hold);
+      holdRow.appendChild(document.createTextNode('保持按下'));
+      actions.appendChild(capRow); actions.appendChild(note); actions.appendChild(holdRow);
+      card.appendChild(actions);
+      btn.addEventListener('click', function () { startCapture(s.id, btn, card); });
+      updateHoldState(card);
+      (layout.side === 'right' ? cRight : cLeft).appendChild(card);
+    });
+    (window.G10S_READONLY || []).forEach(function (r) {
+      var card = document.createElement('div');
+      card.className = 'card custom-card readonly default';
+      card.dataset.key = r.key;
+      card.dataset.pos = r.pos;
+      card.dataset.kind = 'off';
+      var r1 = document.createElement('div');
+      r1.className = 'r1';
+      var k = document.createElement('span');
+      k.className = 'k'; k.textContent = r.label;
+      var v = document.createElement('span');
+      v.className = 'v'; v.textContent = r.default;
+      r1.appendChild(k); r1.appendChild(v);
+      card.appendChild(r1);
+      var d = document.createElement('div');
+      d.className = 'd'; d.textContent = r.note;
+      card.appendChild(d);
+      (r.side === 'right' ? cRight : cLeft).appendChild(card);
+    });
+    requestAnimationFrame(refresh);
+  }
+  function currentConfig() {
+    var bindings = {};
+    customCardEls().forEach(function (card) {
+      var btn = card.querySelector('.combo');
+      if (!btn) return;
+      var acts = [];
+      if (btn.dataset.vk) {
+        acts.push({kind:'key', mods:JSON.parse(btn.dataset.mods || '[]'),
+                   vk:parseInt(btn.dataset.vk, 10)});
+      }
+      if (card.dataset.mouseKind === 'wheel' && card.dataset.delta) {
+        acts.push({kind:'wheel', mods:JSON.parse(btn.dataset.mods || '[]'),
+                   delta:parseInt(card.dataset.delta, 10)});
+      } else if (card.dataset.mouseKind === 'button' && card.dataset.button) {
+        acts.push({kind:'button', mods:JSON.parse(btn.dataset.mods || '[]'),
+                   button:card.dataset.button});
+      }
+      if (!acts.length) return;
+      bindings[card.dataset.id] = {
+        actions: acts,
+        hold: card.querySelector('.hold-toggle').checked,
+        note: card.querySelector('.note').value
+      };
+    });
+    return { custom_enabled: ctoggle.checked, bindings: bindings };
+  }
+  function autoSave(msg) {
+    api('/api/config', 'POST', { config: currentConfig() }).then(function () {
+      cstatus(msg || '已自动保存');
+    }).catch(function (e) { cstatus('自动保存失败：' + e.message, true); });
+  }
+
+  function updateHoldState(card) {
+    var btn = card.querySelector('.combo');
+    var hold = card.querySelector('.hold-toggle');
+    if (!btn || !hold) return;
+    var hasKey = !!btn.dataset.vk;
+    hold.disabled = !hasKey;
+    card.querySelector('.hold-row').classList.toggle('off', !hasKey);
+  }
+
+  function clearMapping(card) {
+    var btn = card.querySelector('.combo');
+    if (!btn) return;
+    btn.dataset.vk = '';
+    btn.dataset.mods = '[]';
+    btn.textContent = '点击捕获快捷键';
+    btn.classList.remove('set');
+    card.dataset.mouseKind = ''; card.dataset.delta = ''; card.dataset.button = '';
+    var sel = card.querySelector('.mouse-sel');
+    if (sel) { sel.value = ''; sel.classList.remove('active'); }
+    card.classList.add('default');
+    card.dataset.kind = 'off';
+    card.querySelector('.v').textContent = card.dataset.defaultLabel || '';
+    card.querySelector('.note').value = '';
+    card.querySelector('.note').placeholder = card.dataset.defaultNote || '';
+    card.querySelector('.hold-toggle').checked = false;
+    updateHoldState(card);
+    autoSave('已去掉该按键的映射');
+  }
+  function endCaptureUI(card, restoreLabel) {
+    if (cpoll) { clearInterval(cpoll); cpoll = null; }
+    card.classList.remove('capturing');
+    delete card.dataset.capturing;
+    var btn = card.querySelector('.combo');
+    var del = card.querySelector('.combo-del');
+    if (del) del.title = '去掉这个按键的映射';
+    if (btn) {
+      if (restoreLabel && btn.dataset.prevLabel !== undefined) {
+        btn.textContent = btn.dataset.prevLabel || '点击捕获快捷键';
+      }
+      delete btn.dataset.prevLabel;
+    }
+  }
+  function startCapture(id, btn, card) {
+    if (cpoll) { cstatus('已有一次捕获在进行中，请先完成或取消'); return; }
+    card.dataset.capturing = '1';
+    btn.dataset.prevLabel = btn.textContent;
+    card.querySelector('.combo-del').title = '取消捕获';
+    cstatus('请按下快捷键…（Esc 可捕获，点右侧 × 取消，10 秒超时）');
+    card.classList.add('capturing');
+    api('/api/capture/start', 'POST', { source: id }).then(function () {
+      cpoll = setInterval(function () {
+        api('/api/capture/result').then(function (r) {
+          var res = r.result;
+          if (res.state === 'waiting') return;
+          endCaptureUI(card, res.state !== 'done');
+          if (res.state === 'done') {
+            btn.dataset.vk = res.combo.vk;
+            btn.dataset.mods = JSON.stringify(res.combo.mods);
+            btn.textContent = res.combo.label;
+            btn.classList.add('set');
+            card.classList.remove('default');
+            card.dataset.kind = 'on';
+            card.querySelector('.v').textContent = res.combo.label;
+            updateHoldState(card);
+            cstatus('已捕获 ' + res.combo.label + '，已自动保存');
+            autoSave('已捕获 ' + res.combo.label + '，已自动保存');
+          } else if (res.state === 'timeout') {
+            cstatus('捕获超时，请重试', true);
+          } else {
+            cstatus('已取消');
+          }
+        }).catch(function (e) {
+          endCaptureUI(card, true);
+          cstatus('通信失败：' + e.message, true);
+        });
+      }, 200);
+    }).catch(function (e) {
+      endCaptureUI(card, true);
+      cstatus('启动捕获失败：' + e.message, true);
+    });
+  }
+  function initCustom() {
+    if (!customReady) {
+      cstatus('请从托盘打开「按键说明」，才能使用改键功能。', true);
+      document.querySelectorAll('.custom-tools button, #customEnabled').forEach(function (x) {
+        x.disabled = true;
+      });
+      return;
+    }
+    api('/api/config').then(function (r) {
+      ctoggle.checked = !!r.config.custom_enabled;
+      customEnabledForMode = ctoggle.checked;
+      makeCards(r.config);
+      refreshModeButtons();
+    }).catch(function (e) { cstatus('读取配置失败：' + e.message, true); });
+    document.getElementById('resetCustom').addEventListener('click', function () {
+      customCardEls().forEach(function (card) {
+        var b = card.querySelector('.combo');
+        if (!b) return;
+        b.dataset.vk = ''; b.dataset.mods = '[]';
+        b.textContent = '点击捕获快捷键'; b.classList.remove('set');
+        card.dataset.mouseKind = ''; card.dataset.delta = ''; card.dataset.button = '';
+        var sel = card.querySelector('.mouse-sel');
+        if (sel) { sel.value = ''; sel.classList.remove('active'); }
+        card.classList.add('default');
+        card.dataset.kind = 'off';
+        card.querySelector('.v').textContent = card.dataset.defaultLabel || '未设置';
+        card.querySelector('.note').value = '';
+        card.querySelector('.note').placeholder = card.dataset.defaultNote || '';
+        card.querySelector('.hold-toggle').checked = false;
+        updateHoldState(card);
+      });
+      cstatus('已清空，正在自动保存');
+      autoSave('已清空并自动保存');
+    });
+    ctoggle.addEventListener('change', function () {
+      customEnabledForMode = ctoggle.checked;
+      refreshModeButtons();
+      autoSave('开关已自动保存');
+    });
+  }
+  initModeButtons();
+  initCustom();
+
+  var m = location.hash.match(/^#(p[1-6])$/);
   if (m) activate(m[1]);
 
   window.addEventListener('load', refresh);
@@ -639,6 +1248,11 @@ def main():
             .replace("{{CHANGELOG}}", build_changelog())
             .replace("{{ICON_DIALOG}}", data_uri(ICON_DIALOG, "image/png"))
             .replace("{{ICON_WATCH}}", data_uri(ICON_WATCH, "image/png"))
+            .replace("{{ICON_CUSTOM}}", data_uri(ICON_CUSTOM, "image/png"))
+            .replace("{{CUSTOM_SOURCES}}", json.dumps(custom_mode.SOURCES, ensure_ascii=False))
+            .replace("{{CUSTOM_LAYOUT}}", custom_layout_json())
+            .replace("{{CUSTOM_DEFAULTS}}", json.dumps(CUSTOM_DEFAULTS, ensure_ascii=False))
+            .replace("{{CUSTOM_READONLY}}", custom_readonly_json())
             .replace("{{WHALE}}", data_uri(WHALE, "image/png"))
             .replace("{{QR_WECHAT}}", data_uri(QR_WECHAT, "image/jpeg"))
             .replace("{{QR_ALIPAY}}", data_uri(QR_ALIPAY, "image/jpeg"))

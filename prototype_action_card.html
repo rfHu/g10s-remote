@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自定义按键卡片交互原型</title>
+<style>
+  :root {
+    --accent:#7C3AED; --accent-soft:#F3EEFF; --ink:#24292F; --muted:#6B7280;
+    --line:#E3E5E8; --bg:#F7F8FA; --card:#FFFFFF; --danger:#B42318;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:32px 20px; background:var(--bg); color:var(--ink);
+         font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:520px; margin:0 auto; }
+  h1 { font-size:17px; font-weight:600; margin:0 0 6px; }
+  .hint { font-size:12px; color:var(--muted); margin:0 0 18px; line-height:1.6; }
+  .chip, .del, .capture, select {
+    font-family:inherit; cursor:pointer;
+  }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+          padding:14px 16px; }
+  .r1 { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .k { font-size:14px; font-weight:600; }
+  .tag { font-size:11px; color:var(--muted); background:var(--bg);
+         border:1px solid var(--line); border-radius:20px; padding:2px 8px; }
+  .capture-row { display:flex; gap:6px; margin-bottom:8px; align-items:stretch; }
+  .capture { flex:1; min-width:0; text-align:left; border:1px solid var(--line);
+             background:#fff; color:var(--ink); border-radius:8px;
+             padding:8px 10px; font-size:12px; }
+  .capture.set { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  .capture.capturing { border-style:dashed; color:var(--muted); }
+  .mouse-select { width:116px; flex:none; border:1px solid var(--line); background:#fff;
+                  color:var(--muted); border-radius:8px; padding:0 6px; font-size:12px; }
+  .mouse-select.active { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  .del { width:34px; flex:none; border:1px solid var(--line); background:#fff;
+         color:#9AA1A9; border-radius:8px; font-size:17px; line-height:1; }
+  .del:hover { color:var(--danger); border-color:var(--danger); }
+  .note { width:100%; border:1px solid var(--line); border-radius:8px;
+          padding:7px 9px; font-size:12px; font-family:inherit; margin-bottom:8px; }
+  .hold { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
+  .hold input { accent-color:var(--accent); }
+  .hold.off { opacity:.45; }
+  .status { font-size:12px; color:var(--muted); margin-top:12px; min-height:18px; }
+  pre { background:#fff; border:1px solid var(--line); border-radius:8px;
+        padding:10px 12px; font-size:11px; color:var(--muted);
+        white-space:pre-wrap; margin:12px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>自定义按键卡片 · 交互原型</h1>
+  <p class="hint">三段式：左边点按捕获键盘组合，中间下拉选鼠标按键或滚轮，右边 × 清空。键盘捕获与下拉互不清除，只有 × 会全部清掉；捕获时松开单个修饰键即可作为完整组合。仅为界面验证，不连接程序后端。</p>
+
+  <div class="card">
+    <div class="r1"><span class="k" id="source">上</span><span class="tag">源键</span></div>
+
+    <div class="capture-row">
+      <button type="button" class="capture" id="capture">点击捕捉</button>
+      <select class="mouse-select" id="mouseAction" aria-label="鼠标动作">
+        <option value="">鼠标空</option>
+        <optgroup label="鼠标按键">
+          <option value="button:left">鼠标左键</option>
+          <option value="button:right">鼠标右键</option>
+          <option value="button:middle">鼠标中键</option>
+        </optgroup>
+        <optgroup label="滚轮操作">
+          <option value="wheel:120">滚轮向上</option>
+          <option value="wheel:-120">滚轮向下</option>
+        </optgroup>
+      </select>
+      <button type="button" class="del" id="del" title="去掉这个按键的映射">×</button>
+    </div>
+
+    <input class="note" id="note" type="text" placeholder="备注，例如：滚动网页">
+    <label class="hold" id="holdRow"><input type="checkbox" id="hold"> 保持按下</label>
+  </div>
+
+  <div class="status" id="status"></div>
+  <pre id="out"></pre>
+</div>
+
+<script>
+(function () {
+  var state = { source:'上', mouseKind:'', mods:{}, vk:null, keyLabel:'', delta:0, button:null, hold:false };
+  var captureBtn = document.getElementById('capture');
+  var mouseSelect = document.getElementById('mouseAction');
+  var statusEl = document.getElementById('status');
+  var out = document.getElementById('out');
+  var capturing = false;
+  var MOD_ORDER = ['Control', 'Shift', 'Alt', 'Meta'];
+  var MOD_LABEL = { Control:'Ctrl', Shift:'Shift', Alt:'Alt', Meta:'Win' };
+  var MOD_VK = { Control:0x11, Shift:0x10, Alt:0x12, Meta:0x5B };
+  var BUTTON_LABEL = { left:'鼠标左键', right:'鼠标右键', middle:'鼠标中键' };
+
+  function markSaved(text) {
+    statusEl.textContent = text + ' · ' + new Date().toLocaleTimeString('zh-CN', { hour12:false });
+  }
+  function modList() { return MOD_ORDER.filter(function (m) { return state.mods[m]; }); }
+  function keyLabel() {
+    return modList().map(function (m) { return MOD_LABEL[m]; }).concat(state.keyLabel ? [state.keyLabel] : []).join('+');
+  }
+  function mouseLabel() {
+    if (state.mouseKind === 'wheel' && state.delta) {
+      return state.delta > 0 ? '滚轮向上' : '滚轮向下';
+    }
+    if (state.mouseKind === 'button' && state.button) {
+      return BUTTON_LABEL[state.button];
+    }
+    return '';
+  }
+  function render() {
+    document.getElementById('source').textContent = state.source;
+    if (state.mouseKind === 'wheel') mouseSelect.value = 'wheel:' + state.delta;
+    else if (state.mouseKind === 'button') mouseSelect.value = 'button:' + state.button;
+    else mouseSelect.value = '';
+    mouseSelect.classList.toggle('active', !!mouseLabel());
+
+    captureBtn.textContent = capturing ? '请按键… Esc 取消' :
+                             (state.keyLabel ? keyLabel() : '点击捕捉');
+    captureBtn.classList.toggle('set', !!state.keyLabel);
+    captureBtn.classList.toggle('capturing', capturing);
+
+    var canHold = !!state.keyLabel;
+    document.getElementById('hold').disabled = !canHold;
+    document.getElementById('holdRow').classList.toggle('off', !canHold);
+    document.getElementById('hold').checked = canHold && state.hold;
+
+    var actions = [];
+    if (state.keyLabel) {
+      actions.push({ kind:'key', mods:modList(), vk:state.vk,
+                     label:keyLabel(), hold:canHold && state.hold });
+    }
+    if (mouseLabel()) {
+      actions.push({ kind:state.mouseKind, mods:modList(),
+                     delta:state.mouseKind === 'wheel' ? state.delta : null,
+                     button:state.mouseKind === 'button' ? state.button : null,
+                     label:mouseLabel() });
+    }
+    out.textContent = JSON.stringify({
+      source: state.source,
+      actions: actions,
+      note: document.getElementById('note').value
+    }, null, 2);
+  }
+  function changed(text) { render(); markSaved(text); }
+
+  mouseSelect.addEventListener('change', function () {
+    var v = mouseSelect.value;
+    state.delta = 0; state.button = null; state.mouseKind = '';
+    if (v.indexOf('wheel:') === 0) {
+      state.mouseKind = 'wheel'; state.delta = Number(v.split(':')[1]);
+    } else if (v.indexOf('button:') === 0) {
+      state.mouseKind = 'button'; state.button = v.split(':')[1];
+    }
+    changed('鼠标动作已选择');
+  });
+
+  document.getElementById('del').addEventListener('click', function () {
+    state.vk = null; state.keyLabel = ''; state.mouseKind = '';
+    state.delta = 0; state.button = null; state.mods = {}; state.hold = false;
+    document.getElementById('note').value = '';
+    changed('映射已删除');
+  });
+
+  captureBtn.addEventListener('click', function () {
+    capturing = true;
+    render();
+    statusEl.textContent = '正在捕获键盘组合…';
+  });
+  document.addEventListener('keydown', function (e) {
+    if (!capturing) return;
+    e.preventDefault();
+    if (e.key === 'Escape') { capturing = false; changed('已取消捕获'); return; }
+    if (MOD_ORDER.indexOf(e.key) !== -1) { state.mods[e.key] = true; render(); return; }
+    state.vk = e.key;
+    state.keyLabel = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+    capturing = false;
+    changed('按键组合已捕获');
+  });
+
+  document.addEventListener('keyup', function (e) {
+    if (!capturing || MOD_ORDER.indexOf(e.key) === -1) return;
+    e.preventDefault();
+    var rest = modList().filter(function (m) { return m !== e.key; });
+    state.mods = {};
+    rest.forEach(function (m) { state.mods[m] = true; });
+    state.vk = MOD_VK[e.key];
+    state.keyLabel = MOD_LABEL[e.key];
+    capturing = false;
+    changed('修饰键捕获完成');
+  });
+
+  document.getElementById('note').addEventListener('input', function () { changed('备注已修改'); });
+  document.getElementById('hold').addEventListener('change', function (e) {
+    state.hold = e.target.checked;
+    changed('保持按下已修改');
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

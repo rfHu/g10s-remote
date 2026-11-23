@@ -1,4 +1,4 @@
-"""G10S Pro 遥控器桥接：把遥控器改造成「对话模式 / 观看模式」两用输入设备。
+"""G10S Pro 遥控器桥接：把遥控器改造成「对话 / 观看 / 自定义」三模输入设备。
 
 两类按键走的技术路径不同：
   · 系统会翻译的键（播放 0xB3、返回 0xA6、灯泡 0x5D、PageUp/Down）：
@@ -23,12 +23,12 @@ import ctypes
 import os
 import queue
 import re
-import shutil
 import sys
-import tempfile
 import threading
 import time
 from ctypes import wintypes
+
+import custom_mode
 
 u32 = ctypes.WinDLL("user32", use_last_error=True)
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -52,7 +52,9 @@ MENU_AUTOSTART = 1003
 MENU_HELP = 1007
 MENU_MODE_EDIT = 1005
 MENU_MODE_WATCH = 1006
+MENU_MODE_CUSTOM = 1008
 MF_STRING, MF_CHECKED, MF_SEPARATOR, MF_POPUP = 0x0000, 0x0008, 0x0800, 0x0010
+MF_GRAYED = 0x0002               # 置灰且不可点（自定义模式未开启时用）
 
 # 托盘左键单击与双击共用一个事件：先起个定时器等 350ms，
 # 这段时间内没有第二次点击才算单击。双击时间由系统决定（默认 500ms），
@@ -67,6 +69,8 @@ RID_INPUT = 0x10000003
 RIDI_DEVICENAME = 0x20000007
 WH_KEYBOARD_LL = 13
 RIM_TYPEHID = 2
+RIM_TYPEMOUSE = 0
+RI_MOUSE_LEFT_BUTTON_DOWN = 0x0001
 
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
@@ -74,6 +78,7 @@ KEYEVENTF_EXTENDEDKEY = 0x0001
 
 VK_LCONTROL = 0xA2
 VK_LWIN = 0x5B
+VK_RWIN = 0x5C
 VK_MEDIA_PLAY_PAUSE = 0xB3
 VK_BROWSER_BACK = 0xA6        # 遥控器「返回」键被 Windows 翻译成的 VK
 VK_BROWSER_HOME = 0xAC        # 「返回」键长按时固件改发 AC Home(0x0223)，长按=右键
@@ -85,7 +90,7 @@ VK_OEM_6 = 0xDD               # ]
 
 # Alt+Tab 阶段生效时，这些键不触发收尾：
 # 修饰键本身（Alt 还按着）、Tab（原生就是轮换窗口）、四个方向键（用来选窗口）
-STAGE_KEEP_MODS = {0x10, 0x11, 0x12, 0x14, 0x5B, 0x5C,
+STAGE_KEEP_MODS = {0x10, 0x11, 0x12, 0x14, 0x5B, 0x5C, 0xFC,
                    0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
 # Alt+Tab 浮窗里要用左右/上下选窗口、Tab 轮换，这些不能触发收尾
 ALT_TAB_KEEP = STAGE_KEEP_MODS | {0x09, 0x25, 0x26, 0x27, 0x28}
@@ -100,15 +105,26 @@ VK_NEXT = 0x22                # PgDn
 VK_C = 0x43
 VK_V = 0x56
 MOUSEEVENTF_WHEEL = 0x0800
+MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP = 0x0002, 0x0004
+MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP = 0x0008, 0x0010
+MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP = 0x0020, 0x0040
 WHEEL_DELTA = 120
 WHEEL_MIN_INTERVAL = 0.09     # 滚轮最小间隔，防止按住时滚得飞快
-KEY_MODE = "edit"             # "edit"=对话模式（上/下=方向键）；"watch"=观看模式（上/下=滚轮）
+MODE_ORDER = ("edit", "watch", "custom")
+MODE_LABEL = {"edit": "对话模式", "watch": "观看模式", "custom": "自定义模式"}
+KEY_MODE = "edit"             # edit=对话；watch=观看；custom=按用户配置自行改键
+CUSTOM_CFG = custom_mode.default_config()   # 启动时由 load_config() 覆盖
+CUSTOM_CONSUMER_ACTIONS = {}                # consumer usage -> action（OK / 麦克风）
+CUSTOM_MOUSE_ACTIONS = {}                   # 鼠标左键 -> action（飞鼠开时的 OK）
+CONTROL = None                              # 说明页的本机控制服务
 VK_RETURN = 0x0D
 VK_ESCAPE = 0x1B
 # 扩展键：注入时必须带 KEYEVENTF_EXTENDEDKEY，否则部分程序（尤其浏览器）
 # 只看到扫描码、认不出是哪个键
 EXTENDED_VKS = {VK_BROWSER_BACK, VK_BROWSER_HOME, VK_MEDIA_PLAY_PAUSE,
                 VK_PRIOR, VK_NEXT, VK_INSERT}
+# 保持按下时 Win/右修饰键也必须带 EXTENDEDKEY，否则目标程序认不出
+HOLD_EXTENDED_VKS = EXTENDED_VKS | {VK_LWIN, VK_RWIN, 0xA1, 0xA3, 0xA5}
 
 USAGE_PLAY_PAUSE = 0x00CD
 USAGE_VOICE = 0x00CF
@@ -342,8 +358,139 @@ def tap_wheel(delta):
     return True
 
 
+def wheel_ready():
+    """节流判断放在按修饰键之前：不该滚的这一次不要白按/白松 Shift。"""
+    return time.time() - _last_wheel >= WHEEL_MIN_INTERVAL
+
+
+def tap_mouse(button):
+    """在光标当前位置发一次鼠标点击（左/右/中键）。"""
+    flags = {
+        "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+        "middle": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+    }.get(button)
+    if flags is None:
+        return
+    for flag in flags:
+        i = INPUT()
+        i.type = 0                      # INPUT_MOUSE
+        i.u.mi.dx = 0
+        i.u.mi.dy = 0
+        i.u.mi.mouseData = 0
+        i.u.mi.dwFlags = flag
+        i.u.mi.time = 0
+        i.u.mi.dwExtraInfo = MAGIC_EXTRA
+        if sendinput(1, ctypes.byref(i), ctypes.sizeof(INPUT)) != 1:
+            raise OSError(ctypes.get_last_error(), "SendInput 鼠标%s失败" % button)
+        time.sleep(0.01)
+
+
+def press_action_mods(mods):
+    """只按下不是物理按住的修饰键；返回我们真正注入的那些，供之后精确松开。"""
+    injected = []
+    for m in mods:
+        if u32.GetKeyState(m) & 0x8000:
+            continue                    # 用户手上按着，不要替他松开
+        _send(m, ext=m in HOLD_EXTENDED_VKS, extra=MAGIC_EXTRA)
+        injected.append(m)
+        time.sleep(0.012)
+    return injected
+
+
+def release_action_mods(injected):
+    for m in reversed(injected):
+        _send(m, up=True, ext=m in HOLD_EXTENDED_VKS, extra=MAGIC_EXTRA)
+        time.sleep(0.008)
+
+
+def install_custom_actions(cfg):
+    """把配置装进运行中的映射表。整体 clear+update，不改正在被别的线程引用的表对象。"""
+    global CUSTOM_CFG
+    CUSTOM_CFG = custom_mode.normalize_config(cfg)
+    vk_table, consumer_table, mouse_table = custom_mode.build_tables(CUSTOM_CFG)
+    custom = KEY_ACTIONS_BY_MODE.setdefault("custom", {})
+    custom.clear()
+    custom.update(vk_table)
+    CUSTOM_CONSUMER_ACTIONS.clear()
+    CUSTOM_CONSUMER_ACTIONS.update(consumer_table)
+    CUSTOM_MOUSE_ACTIONS.clear()
+    CUSTOM_MOUSE_ACTIONS.update(mouse_table)
+
+
+def apply_custom_config(cfg):
+    """说明页保存配置后的回调：热更新映射，并处理「关掉开关时人还在自定义模式」。"""
+    install_custom_actions(cfg)
+    if HELD.active and HELD.source not in custom_mode.hold_sources(CUSTOM_CFG):
+        HELD.release("配置已更改")
+    if not CUSTOM_CFG.get("custom_enabled") and KEY_MODE == "custom":
+        set_mode("edit")
+    else:
+        refresh_tray()
+    log("自定义模式：快捷切换%s，已配置 %d 个按键"
+        % ("开" if CUSTOM_CFG.get("custom_enabled") else "关",
+           len(CUSTOM_CFG.get("bindings", {}))))
+
+
+def run_action(act):
+    """钩子与 Raw Input 共用的动作执行口，只在消息循环线程调用。"""
+    if len(act) == 4:
+        kind, target, text, src_id = act
+    else:
+        kind, target, text = act
+        src_id = None
+    if kind == "multi":
+        for sub in target:
+            run_action(sub)
+        return
+    elif kind == "right_click":
+        tap_right_click()
+    elif kind == "toggle_mode":
+        toggle_mode()
+        return
+    elif kind == "hold":
+        mods, main_vk = target
+        if HELD.active and HELD.source == src_id:
+            HELD.release("再次按下")
+        else:
+            HELD.press(src_id, mods, main_vk)
+        return
+    elif kind == "chord":
+        mods, main_vk = target
+        tap_chord(mods, main_vk)
+    elif kind == "wheel":
+        mods, delta = target
+        if not wheel_ready():
+            return
+        injected = press_action_mods(mods)
+        try:
+            if not tap_wheel(delta):
+                return
+        finally:
+            release_action_mods(injected)
+    elif kind == "button":
+        mods, button = target
+        injected = press_action_mods(mods)
+        try:
+            tap_mouse(button)
+        finally:
+            release_action_mods(injected)
+    elif kind == "copy":
+        tap_copy()
+    elif kind == "paste":
+        tap_paste()
+    else:
+        tap_key(target, ext=target in EXTENDED_VKS)
+    log("%s" % text)
+
+
 def mode_text():
-    return "对话模式" if KEY_MODE == "edit" else "观看模式"
+    return MODE_LABEL.get(KEY_MODE, "未知模式")
+
+
+def allowed_modes():
+    """快捷切换（静音键 / 托盘左键）能到达的模式。"""
+    return MODE_ORDER if CUSTOM_CFG.get("custom_enabled") else ("edit", "watch")
 
 
 def tray_text():
@@ -368,8 +515,17 @@ def refresh_tray_text():
 def set_mode(mode):
     """直接指定模式（托盘子菜单用）。已经是该模式时什么都不做。"""
     global KEY_MODE
+    if mode not in MODE_ORDER:
+        return False
     if KEY_MODE == mode:
         return False
+    # 别把语音/Alt+Tab 的第一阶段状态带进新模式，否则修饰键会卡住。
+    if VOICE.held:
+        VOICE.release_fast("切换模式")
+    if HELD.active:
+        HELD.release("切换模式")
+    if ALT_TAB_ARMED:
+        alt_tab_cancel("切换模式")
     KEY_MODE = mode
     log("已切换到：%s" % mode_text())
     refresh_tray()
@@ -377,15 +533,18 @@ def set_mode(mode):
 
 
 def toggle_mode():
-    set_mode("watch" if KEY_MODE == "edit" else "edit")
+    modes = allowed_modes()
+    cur = KEY_MODE if KEY_MODE in modes else modes[0]
+    set_mode(modes[(modes.index(cur) + 1) % len(modes)])
     return mode_text()
 
 
-def preempt_stages(vk):
+def preempt_stages(vk, src_id=None):
     """按下别的键时，先把处于「第一阶段」的切换型功能收尾。
 
-    - 语音输入进行中  → 结束语音（松开 Ctrl+Win）
-    - Alt+Tab 浮窗打开 → 确认切换（松开 Alt）
+    - 保持按下中 → 松开保持的键，本次按键吞掉
+    - 语音输入进行中  → 结束语音（松开 Ctrl+Win），本次按键吞掉
+    - Alt+Tab 浮窗打开 → 取消浮窗（松开 Alt），本次按键吞掉
 
     返回 True 表示这个键被「吸收」了：它只用来收尾，本身的动作不再执行。
     这样语音刚上屏时误按方向键/退格，就不会连带改掉刚说的话。
@@ -397,6 +556,11 @@ def preempt_stages(vk):
     （不加锁，只发两条带 20ms 间隔的 keyup）。
     """
     consumed = False
+    if interrupt_held(src_id):
+        # 静音键的切换走 Raw Input 另一条通道，这里留标记让它也跳过切模式
+        if vk == VK_MUTE:
+            note_mute_used_for_voice()
+        return True
     if VOICE.held:
         # 不排除修饰键：用户要求「说话时按任何键都算松手」，Ctrl/Shift/Alt 也算。
         # 之所以敢放开，是因为注入的 Ctrl/Win 按下事件到达钩子时 held 仍是 False
@@ -501,7 +665,7 @@ def tap_key(vk, extra=0, ext=False):
 # 不在当前模式表里的键一律放行 —— 于是「观看模式下播放键恢复原生」这类需求
 # 不再需要单独的放行判断，往表里少写一行即可。
 # 这张表由 main() 填充。
-KEY_ACTIONS_BY_MODE = {"edit": {}, "watch": {}}
+KEY_ACTIONS_BY_MODE = {"edit": {}, "watch": {}, "custom": {}}
 
 # 只吃掉原生行为、动作另走一条路的源键。
 # 静音键归此类：它的切换动作改由消费者页报文（0x00E2）触发。
@@ -621,6 +785,87 @@ class Voice:
 
 
 VOICE = Voice()
+
+# ---------------- 自定义模式的「保持按下」 ----------------
+# 与语音键同一类“第一阶段”状态：同一源键再按一次松开，别的键只用于松开、本身不执行。
+# 松开必须严格反序（主键先松、修饰键后松），且 Win/右修饰键要带 EXTENDEDKEY。
+class HeldAction:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.active = False
+        self.source = None
+        self.mods = ()
+        self.vk = 0
+        self.since = 0.0
+
+    def press(self, source, mods, vk):
+        if not self.lock.acquire(timeout=0.15):
+            log("[hold] press 拿不到锁，跳过")
+            return False
+        try:
+            if self.active:
+                self._release_locked("切换到另一个保持键")
+            for m in mods:
+                _send(m, ext=m in HOLD_EXTENDED_VKS, extra=MAGIC_EXTRA)
+                time.sleep(0.012)
+            _send(vk, ext=vk in HOLD_EXTENDED_VKS, extra=MAGIC_EXTRA)
+            self.active = True
+            self.source = source
+            self.mods = tuple(mods)
+            self.vk = vk
+            self.since = time.time()
+            label = custom_mode.SOURCE_BY_ID.get(source, {}).get("label", source)
+            log("保持按下开始：%s" % label)
+            return True
+        finally:
+            self.lock.release()
+
+    def release(self, reason=""):
+        if not self.lock.acquire(timeout=0.15):
+            log("[hold] release 拿不到锁，跳过（%s）" % reason)
+            return False
+        try:
+            if not self.active:
+                return False
+            self._release_locked(reason)
+            return True
+        finally:
+            self.lock.release()
+
+    def _release_locked(self, reason=""):
+        """调用者必须持锁。先置位再松键，避免事件重入。"""
+        label = custom_mode.SOURCE_BY_ID.get(self.source, {}).get("label", self.source)
+        self.active = False
+        mods, vk = self.mods, self.vk
+        self.source, self.mods, self.vk = None, (), 0
+        try:
+            _send(vk, up=True, ext=vk in HOLD_EXTENDED_VKS, extra=MAGIC_EXTRA)
+            time.sleep(0.012)
+            for m in reversed(mods):
+                _send(m, up=True, ext=m in HOLD_EXTENDED_VKS, extra=MAGIC_EXTRA)
+                time.sleep(0.008)
+        except Exception as e:
+            log("松开保持键失败(%r)，强制重试修饰键" % (e,))
+            for m in reversed(mods):
+                try:
+                    _send(m, up=True, ext=m in HOLD_EXTENDED_VKS, extra=MAGIC_EXTRA)
+                except Exception:
+                    pass
+        log("保持按下结束%s" % ("（%s）" % reason if reason else "") + "：%s" % label)
+
+
+HELD = HeldAction()
+
+
+def interrupt_held(src_id, reason="被其他按键打断"):
+    """别的键打断保持：只松开，返回 True 表示这个键应被吞掉。"""
+    if not HELD.active:
+        return False
+    if src_id is not None and src_id == HELD.source:
+        return False                      # 同一源键交给 run_action 做 toggle
+    HELD.release(reason)
+    return True
+
 
 # ---------------- 「静音键只用来结束语音」的一次性抑制 ----------------
 # 静音键有两条通道：钩子收到 VK 0xAD（能吞掉），Raw Input 收到消费者页
@@ -1045,6 +1290,28 @@ def on_raw_input(lparam):
         return
 
     dw_type = int.from_bytes(raw[0:4], "little")
+    if dw_type == RIM_TYPEMOUSE:
+        # 飞鼠开启时 OK 不发消费者页报文，而是这颗遥控器发出的鼠标左键。
+        # 只认目标设备的左键按下，松开不触发，避免一次点击执行两次。
+        handle = int.from_bytes(raw[8:16], "little")
+        if not device_is_target(handle):
+            return
+        off = SIZEOF_RAWINPUTHEADER
+        if len(raw) < off + 8:
+            return
+        flags = int.from_bytes(raw[off + 4:off + 6], "little")
+        if KEY_MODE == "custom" and (flags & RI_MOUSE_LEFT_BUTTON_DOWN):
+            src = "mouse:left"
+            if HELD.active and HELD.source != src:
+                HELD.release("被 OK 键打断")
+                return
+            if VOICE.held:
+                VOICE.release("被 OK 键打断")
+                return
+            act = CUSTOM_MOUSE_ACTIONS.get(1)
+            if act is not None:
+                run_action(act)
+        return
     if dw_type != RIM_TYPEHID:
         return
     handle = int.from_bytes(raw[8:16], "little")
@@ -1065,6 +1332,22 @@ def on_raw_input(lparam):
     if len(data) != 3:
         # 非消费者页格式（例如 17 字节的厂商私有报文），调试模式下只记录不处理
         return
+    # OK/麦克风不产生键盘事件，钩子的 preempt_stages 看不到它们；
+    # 保持按下中按到这两个键时，必须在这里单独补一次「只松开、不执行」。
+    if usage in (USAGE_VOICE, USAGE_OK):
+        src_id = "consumer:0x%04X" % usage
+        if HELD.active and HELD.source != src_id:
+            HELD.release("被 %s 打断" % src_id)
+            return
+    # 自定义模式：OK/麦克风优先走用户配置；没配就保持原生（系统本来就丢弃）。
+    # 静音、音量不在此分支，仍走下面的固定逻辑。
+    if KEY_MODE == "custom":
+        act = CUSTOM_CONSUMER_ACTIONS.get(usage)
+        if act is not None:
+            run_action(act)
+            return
+        if usage in (USAGE_VOICE, USAGE_OK):
+            return
     if usage == USAGE_VOICE:
         if CFG.voice:
             if CFG.voice_mode == "toggle":
@@ -1087,6 +1370,9 @@ def on_raw_input(lparam):
         # 但「复位音量」必须照做：驱动层那一下真静音已经发生了，
         # 跳过整个处理会让音量卡在静音状态。
         allow_toggle = True
+        if HELD.active:
+            HELD.release("被静音键打断")
+            allow_toggle = False
         if VOICE.held:
             VOICE.release("被静音键打断")
             allow_toggle = False
@@ -1106,6 +1392,9 @@ def on_raw_input(lparam):
                 log("音量键消费者页报文（未接管，交给系统）")
         else:
             # NOLEGACY 把系统的音量默认行为一起关掉了，这里转发等价的原生 VK 补回来
+            if HELD.active:
+                HELD.release("被音量键打断")
+                return
             tap_key(VK_VOLUME_UP if usage == USAGE_VOL_UP else VK_VOLUME_DOWN,
                     extra=MAGIC_EXTRA)
             now = time.time()
@@ -1157,12 +1446,34 @@ def low_level_proc(n_code, w_param, l_param):
         # 再拦一次变成回车；静音回拨注入的 0xAD 也会被自己吃掉。
         if kb.dwExtraInfo == MAGIC_EXTRA:
             return u32.CallNextHookEx(None, n_code, w_param, l_param)
+        # 说明页正在采集快捷键：把所有键盘事件吞掉，只把按键内容交给捕获状态。
+        # 必须放在 preempt_stages 之前，否则语音/Alt+Tab 收尾会抢走这次按键。
+        if CONTROL is not None and CONTROL.state.active:
+            vk = kb.vkCode
+            canon_mod = custom_mode.normalize_mod(vk)
+            if canon_mod:
+                vk = canon_mod   # 0xA0/0xA1/0xFC 等变体统一成规范修饰键
+            if w_param in (0x0100, 0x0104):        # 按下（含系统键）
+                if vk in custom_mode.MOD_VKS:
+                    # 修饰键按下只累积，不在这里收尾；否则 Ctrl+Shift+Z 会在 Shift 处提前结束。
+                    # 单个修饰键或 Ctrl+Shift 这样的组合，在松开修饰键时收尾（见下面 key up）。
+                    CONTROL.state.mod_down(vk)
+                else:
+                    CONTROL.state.key(vk)
+            else:
+                # 捕获中松开修饰键：若组合还没结束，就把它作为单个/末尾键收尾。
+                if vk in custom_mode.MOD_VKS and CONTROL.state.mods:
+                    CONTROL.state.key(vk)
+                else:
+                    CONTROL.state.mod_up(vk)
+            return 1
         if w_param in (0x0100, 0x0104):        # 只在按下时判断，松开不重复触发
             if CFG.debug_keys:
                 log("钩子看到按键 VK=0x%02X（录音中=%s，AltTab=%s）"
                     % (kb.vkCode, VOICE.held, ALT_TAB_ARMED))
             try:
-                if preempt_stages(kb.vkCode):
+                src_id = ("vk:0x%02X" % kb.vkCode) if KEY_MODE == "custom" else None
+                if preempt_stages(kb.vkCode, src_id):
                     # 这个键被用来收尾了，动作不再执行（否则语音刚上屏时
                     # 一个方向键/退格就会改掉刚说出来的那句话）
                     return 1
@@ -1259,25 +1570,10 @@ def wndproc(hwnd, msg, wparam, lparam):
         # 按下时的模式快照：消息排队期间用户可能又切了模式
         act = KEY_ACTIONS_BY_MODE.get(KEY_MODE, {}).get(wparam)
         if act is not None:
-            kind, target, text = act
             try:
-                if kind == "right_click":
-                    tap_right_click()
-                elif kind == "toggle_mode":
-                    toggle_mode()
-                    return 0
-                elif kind == "chord":
-                    mods, main_vk = target
-                    tap_chord(mods, main_vk)
-                elif kind == "copy":
-                    tap_copy()
-                elif kind == "paste":
-                    tap_paste()
-                else:
-                    tap_key(target, ext=target in EXTENDED_VKS)
-                log("%s" % text)
+                run_action(act)
             except Exception as e:
-                log("注入失败（%s）: %r" % (text, e))
+                log("注入失败（%s）: %r" % (act[2], e))
         return 0
     return u32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
@@ -1367,12 +1663,13 @@ _TRAY_ICONS = {}      # 文件名 -> HICON，避免每次切模式都从磁盘�
 
 
 def tray_icon_handle(icon_name=None):
-    """按当前模式选图标：方向键=蓝（app.ico），滚轮=橙（app-wheel.ico）。
+    """按当前模式选图标：对话=绿、观看=蓝、自定义=紫。
 
     找不到文件就退回系统默认图标，不影响功能。
     """
     if icon_name is None:
-        icon_name = "app-watch.ico" if KEY_MODE == "watch" else "app-dialog.ico"
+        icon_name = {"edit": "app-dialog.ico", "watch": "app-watch.ico",
+                     "custom": "app-custom.ico"}.get(KEY_MODE, "app-dialog.ico")
     if icon_name in _TRAY_ICONS:
         return _TRAY_ICONS[icon_name]
     h = None
@@ -1500,24 +1797,35 @@ def open_log():
         log("打开日志失败: %r" % (e,))
 
 
+def set_mode_from_help(mode):
+    """说明页里的切模式按钮走这里：自定义模式必须先打开允许切换。"""
+    if mode == "custom" and not CUSTOM_CFG.get("custom_enabled"):
+        log("说明页请求切到自定义模式被拒绝：开关未开启")
+        return False
+    return set_mode(mode)
+
+
 def open_help():
     """打开按键说明页。
 
-    help.html 打包在 exe 内部（--onefile 会解压到 _MEIPASS 临时目录），
-    但那个目录在程序退出后会被删掉，浏览器可能还没读完，所以先复制到
-    系统临时目录再用默认浏览器打开。
+    改键页需要回写配置、还要桥接程序代为捕获快捷键，所以说明页改由本机
+    127.0.0.1 的随机端口提供（同源访问，不会有 file:// 的跨域问题）。
+    服务随进程启动/退出，端口不固定，也不对外网监听。
     """
-    base = getattr(sys, "_MEIPASS", BASE_DIR)
-    src = os.path.join(base, "help.html")
-    if not os.path.exists(src):
-        log("找不到按键说明 help.html（打包时漏了 --add-data？）")
-        return
+    global CONTROL
     try:
-        dst_dir = os.path.join(tempfile.gettempdir(), "G10S-Remote")
-        os.makedirs(dst_dir, exist_ok=True)
-        dst = os.path.join(dst_dir, "help.html")
-        shutil.copyfile(src, dst)
-        os.startfile(dst)
+        if CONTROL is None:
+            base = getattr(sys, "_MEIPASS", BASE_DIR)
+            help_path = os.path.join(base, "help.html")
+            if not os.path.exists(help_path):
+                log("找不到按键说明 help.html（打包时漏了 --add-data？）")
+                return
+            CONTROL = custom_mode.ControlServer(
+                help_path, on_config_saved=apply_custom_config, on_event=log,
+                on_set_mode=set_mode_from_help, on_get_mode=lambda: KEY_MODE)
+            CONTROL.start()
+            log("说明页本机服务已启动：127.0.0.1:%d" % CONTROL.port)
+        os.startfile("http://127.0.0.1:%d/" % CONTROL.port)
         log("已打开按键说明")
     except Exception as e:
         log("打开按键说明失败: %r" % (e,))
@@ -1607,8 +1915,12 @@ def show_tray_menu(hwnd):
         if sub:
             edit_flags = MF_STRING | (MF_CHECKED if KEY_MODE == "edit" else 0)
             watch_flags = MF_STRING | (MF_CHECKED if KEY_MODE == "watch" else 0)
+            custom_flags = MF_STRING | (MF_CHECKED if KEY_MODE == "custom" else 0)
+            if not CUSTOM_CFG.get("custom_enabled"):
+                custom_flags |= MF_GRAYED   # 没开启自定义模式时不可点
             u32.AppendMenuW(sub, edit_flags, MENU_MODE_EDIT, "对话模式")
             u32.AppendMenuW(sub, watch_flags, MENU_MODE_WATCH, "观看模式")
+            u32.AppendMenuW(sub, custom_flags, MENU_MODE_CUSTOM, "自定义模式")
             # CreatePopupMenu 的 restype 是 c_void_p，ctypes 返回的是普通整数
             # （不是 c_void_p 实例），所以这里直接传，不能写 sub.value
             u32.AppendMenuW(menu, MF_POPUP, sub, "模式")
@@ -1644,6 +1956,8 @@ def handle_menu(cmd):
         set_mode("edit")
     elif cmd == MENU_MODE_WATCH:
         set_mode("watch")
+    elif cmd == MENU_MODE_CUSTOM:
+        set_mode("custom")
     elif cmd == MENU_AUTOSTART:
         want = not autostart_enabled()
         if set_autostart(want):
@@ -1739,6 +2053,12 @@ def main():
            "  [dry-run]" if CFG.dry_run else "",
            "  [own]" if CFG.own else ""))
 
+    # 自定义模式配置存在 %APPDATA%，升级 exe 后仍然保留。
+    install_custom_actions(custom_mode.load_config())
+    log("自定义模式：快捷切换%s，已配置 %d 个按键"
+        % ("开" if CUSTOM_CFG.get("custom_enabled") else "关",
+           len(CUSTOM_CFG.get("bindings", {}))))
+
     # ---- 键位表：按模式区分，不在表里的键一律放行原生 ----
     edit = KEY_ACTIONS_BY_MODE["edit"]
     watch = KEY_ACTIONS_BY_MODE["watch"]
@@ -1782,7 +2102,7 @@ def main():
             return 0
 
     HWND = make_message_window()
-    pages = [(0x0C, 0x01)]
+    pages = [(0x0C, 0x01), (0x01, 0x02)]   # 消费者页 + 鼠标页（飞鼠开时的 OK）
     if CFG.debug:
         # 调试时顺带监听厂商私有页与系统控制页，看开麦期间有没有其他报文
         # （这两页只旁听，绝不加 NOLEGACY：那会连系统对电源键的处理一起关掉）
@@ -1844,6 +2164,8 @@ def main():
                     u32.DispatchMessageW(ctypes.byref(msg))
                 VOICE.watchdog()
                 alt_tab_watchdog()
+                if CONTROL is not None:
+                    CONTROL.state.check_timeout()
                 # 注意：这里绝不能放任何可能阻塞的调用（COM、IO、等待）。
                 # 低级键盘钩子的回调跑在本线程上，主线程一阻塞，钩子回调就排队，
                 # 超过系统阈值（默认 300ms）后这一次事件会被跳过，VK 0xAD 直接漏给
@@ -1855,8 +2177,12 @@ def main():
     # 收尾：一定要释放修饰键，否则 Win 会卡在按下状态
     _WORK_Q.put(None)
     alt_tab_commit("退出")
+    if HELD.active:
+        HELD.release("退出")
     VOICE.release("退出")
     remove_tray()
+    if CONTROL is not None:
+        CONTROL.stop()
     if hook:
         u32.UnhookWindowsHookEx(hook)
     for h in (TRAY_HWND, HWND):

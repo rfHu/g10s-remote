@@ -14,6 +14,7 @@ OUT_ICO = os.path.join(ROOT, "app.ico")
 OUT_WHEEL_ICO = os.path.join(ROOT, "app-wheel.ico")
 OUT_DIALOG_ICO = os.path.join(ROOT, "app-dialog.ico")
 OUT_WATCH_ICO = os.path.join(ROOT, "app-watch.ico")
+OUT_CUSTOM_ICO = os.path.join(ROOT, "app-custom.ico")
 OUT_PNG = os.path.join(ROOT, "app-preview.png")
 SIZES = [16, 32, 48, 64, 256]
 SS = 4                      # 超采样倍数
@@ -22,6 +23,7 @@ BG = (0x2F, 0x6F, 0xEB)         # 蓝底 —— 程序图标（麦克风）
 BG_WHEEL = (0xE0, 0x7A, 0x1E)   # 橙底 —— 旧滚轮图标
 BG_DIALOG = (0x24, 0xA1, 0x5A)  # 绿底 —— 对话模式
 BG_WATCH = (0x25, 0x63, 0xC7)   # 蓝底 —— 观看模式（比程序图标略深，便于区分）
+BG_CUSTOM = (0x7C, 0x3A, 0xED)  # 紫底 —— 自定义模式
 FG = (0xFF, 0xFF, 0xFF)     # 白色前景
 
 
@@ -108,6 +110,15 @@ def eye_alpha(x, y):
     if outer and not inner:
         return True
     return (x - 0.5) ** 2 + (y - 0.5) ** 2 <= 0.105 ** 2
+
+
+def person_alpha(x, y):
+    """白色半身人形（大头 + 肩），用于「自定义模式」图标。不画脖子竖线。"""
+    if _in_circle(x, y, 0.50, 0.27, 0.17):
+        return True
+    if y >= 0.44 and in_ellipse(x, y, 0.50, 0.86, 0.33, 0.42):
+        return True
+    return False
 
 
 def render(size, bg=BG, glyph=mic_alpha):
@@ -202,6 +213,9 @@ def main():
     build(OUT_DIALOG_ICO, BG_DIALOG, bubbles_alpha, OUT_PNG.replace("preview", "preview-dialog"))
     print("观看模式图标（眼睛，蓝）")
     build(OUT_WATCH_ICO, BG_WATCH, eye_alpha, OUT_PNG.replace("preview", "preview-watch"))
+    print("自定义模式图标（半身人形，紫）")
+    build(OUT_CUSTOM_ICO, BG_CUSTOM, person_alpha,
+          OUT_PNG.replace("preview", "preview-custom"))
     print("旧滚轮图标（上下箭头，橙）—— 已不用，保留生成")
     build(OUT_WHEEL_ICO, BG_WHEEL, arrows_alpha, OUT_PNG.replace("preview", "preview-wheel"))
     return 0
