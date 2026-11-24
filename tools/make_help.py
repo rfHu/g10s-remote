@@ -215,6 +215,17 @@ def build_anchors():
     return "\n".join(out)
 
 
+def _inline_md(text):
+    """CHANGELOG 条目里的行内标记：`代码` 与 **粗体**。
+
+    先做 HTML 转义再还原标记，避免 CHANGELOG 内容破坏页面结构。
+    """
+    s = html_mod.escape(text)
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+    s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+    return s
+
+
 def build_changelog():
     """把 CHANGELOG.md 解析成版本日志卡片（数据只有 CHANGELOG.md 一份来源）。"""
     with open(CHANGELOG, encoding="utf-8") as f:
@@ -234,7 +245,7 @@ def build_changelog():
         else:
             ver, date = title, ""
         items = [ln[1:].strip() for ln in lines[1:] if ln.startswith("- ")]
-        lis = "\n".join("<li>%s</li>" % html_mod.escape(it) for it in items)
+        lis = "\n".join("<li>%s</li>" % _inline_md(it) for it in items)
         out.append(
             '<div class="ver-block"><div class="ver-head">'
             '<span class="ver-tag">%s</span><span class="ver-date">%s</span></div>'
@@ -547,6 +558,12 @@ TPL = """<!DOCTYPE html>
   .ver-date { font-size:12px; color:var(--faint); }
   .ver-block ul { margin:0; padding-left:20px; color:#38414a; }
   .ver-block li { margin:4px 0; font-size:13px; }
+  .ver-block li strong { color:#1f2328; font-weight:650; }
+  .ver-block li code {
+    font-family:ui-monospace,Consolas,"Courier New",monospace; font-size:12px;
+    background:#f2f4f7; border:1px solid #e6e9ee; border-radius:4px;
+    padding:1px 5px; color:#38414a;
+  }
 
   @media (max-width:900px){
     .stage { grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:14px; }

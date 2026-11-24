@@ -303,6 +303,12 @@
   .ver-date { font-size:12px; color:var(--faint); }
   .ver-block ul { margin:0; padding-left:20px; color:#38414a; }
   .ver-block li { margin:4px 0; font-size:13px; }
+  .ver-block li strong { color:#1f2328; font-weight:650; }
+  .ver-block li code {
+    font-family:ui-monospace,Consolas,"Courier New",monospace; font-size:12px;
+    background:#f2f4f7; border:1px solid #e6e9ee; border-radius:4px;
+    padding:1px 5px; color:#38414a;
+  }
 
   @media (max-width:900px){
     .stage { grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:14px; }
@@ -528,9 +534,9 @@
   <section id="p6">
     <div class="changelog">
       <p class="lead">按版本倒序记录每次更新，完整历史见仓库的 CHANGELOG.md。</p>
-      <div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.4</span><span class="ver-date">2026-11-20</span></div><ul><li>新增「自定义模式」：**默认关闭**，需用户在说明页主动开启；除静音键和音量键外，可给程序能识别的遥控按键设置自己的键盘快捷键</li>
+      <div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.4</span><span class="ver-date">2026-11-24</span></div><ul><li>新增「自定义模式」：<strong>默认关闭</strong>，需用户在说明页主动开启；除静音键和音量键外，可给程序能识别的遥控按键设置自己的键盘快捷键</li>
 <li>新增可切换开关：静音键与托盘左键单击是否允许切进自定义模式；关闭后右键菜单里的「自定义模式」置灰不可点，但仍可直接从菜单开启该功能</li>
-<li>说明页新增「自定义按键」页签：可把遥控按键映射到键盘组合、鼠标按键或滚轮（含修饰键），点按钮捕获或下拉点选，修改后自动保存，已映射的按键右侧可点 × 去掉映射；配置保存在 `%APPDATA%\G10S-Remote\config.json`</li>
+<li>说明页新增「自定义按键」页签：可把遥控按键映射到键盘组合、鼠标按键或滚轮（含修饰键），点按钮捕获或下拉点选，修改后自动保存，已映射的按键右侧可点 × 去掉映射；配置保存在 <code>%APPDATA%\G10S-Remote\config.json</code></li>
 <li>自定义按键可勾选「保持按下」：第一次按下保持不松，再按同一键松开；期间按其他键只松开、不执行那个键</li>
 <li>OK 键按飞鼠状态拆成两个独立配置项：「OK（飞鼠关）」走消费者页报文，「OK（飞鼠开）」走遥控器发出的鼠标左键</li>
 <li>自定义模式使用紫色底、白色半身人形托盘图标</li>
@@ -538,7 +544,7 @@
 <li>托盘提示直接显示版本号，不再写「运行中」</li>
 <li>启动时校准开机自启动项：包名带版本号后升级不会继续拉起旧版本</li>
 <li>修正说明页版本日志里 v0.0.3 的键位描述：右键在返回键长按，不在灯泡键</li>
-<li>自定义按键捕获修正：修饰键变体（如左 Shift `0xA0`）统一归一，避免 `Ctrl+Shift+Z` 被存成 `Ctrl+0xA0`；组合键不再在第二个修饰键处提前结束</li>
+<li>自定义按键捕获修正：修饰键变体（如左 Shift <code>0xA0</code>）统一归一，避免 <code>Ctrl+Shift+Z</code> 被存成 <code>Ctrl+0xA0</code>；组合键不再在第二个修饰键处提前结束</li>
 <li>自定义按键捕获可用 Esc 作为目标键；捕获中点右侧 × 取消</li></ul></div>
 <div class="ver-block"><div class="ver-head"><span class="ver-tag">v0.0.3</span><span class="ver-date">2026-11-19</span></div><ul><li>鼠标右键挂在「返回」键长按上：短按后退/Esc，按住固件改发 AC Home(0xAC)，不靠软件计时</li>
 <li>灯泡键 → 回车（最好按的键留给最高频的发送）</li>
